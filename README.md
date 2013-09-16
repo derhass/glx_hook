@@ -44,6 +44,7 @@ be called. Tested witrh glibc-2.13 (from debian wheezy). To build, just type
 $ make
 
 Finally copy the glx_hook.so to where you like it. For a debug build, do
+
 $ make DEBUG=1
 
 Have fun,
