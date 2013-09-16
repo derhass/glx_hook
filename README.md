@@ -10,30 +10,33 @@ application using GLX_EXT_swap_control or GLX_SGI_swap_control extensions.
 This tool works by intercepting calls to those functions and exchanging the
 value (or silently ignoring this call altoghether, so that you driver
 settings become effective). To do so, it is using the (in)famous LD_PRELOAD
-approch. Basic usage:
+approch.
 
-$ LD_PRELOAD=path/to/glx_hook.so GH_SWAP_MODE=<mode> target_binary
+# USAGE:
 
-where <mode> controls how the values are exchanged. Valid modes are
-nop		keep calls as intended by the application
-ignore		silently ignore the calls (return success to the application)
-clamp=x,y	clamp requested swap interval to [x,y]
-force=x		always set swap interval x
-disable		same as force=0
-enable		same as min=1
-min=x		set interval to at lease x
-max=x		set interval to at most x
+$ LD_PRELOAD=path/to/glx_hook.so GH_SWAP_MODE=_mode_ target_binary
+
+where _mode_ controls how the values are exchanged. Valid modes are
+* nop: keep calls as intended by the application
+* ignore: silently ignore the calls (return success to the application)
+* clamp=_x_,_y_: clamp requested swap interval to [_x_,_y_]
+* force=_x_: always set swap interval _x_
+* disable: same as force=0
+* enable: same as min=1
+* min=_x_: set interval to at least _x_
+* max=_x_: set interval to at most _x_
 
 NOTE: The tool currently only changes values forwarded to the swap interval
 functions, or ignores these calls completely, but never adds new calls
 to set the swap interval. If the app doesn't do it, this tool does nothing.
 
 Further enivornmet variables controlling the behavior
-GH_VERBOSE=<level>	control level of verbosity
-GH_VERBOSE_FILE=<file>	redirect verbose output to <file> (default is to use
-			standard error stream)
+* GH_VERBOSE=_level_: control level of verbosity (0 to 5)
+* GH_VERBOSE_FILE=<file>: redirect verbose output to <file> (default is to use
+			   standard error stream)
 
-INSTALLATION:
+# INSTALLATION:
+
 This requires glibc, as we call some internal glibc functions not intended to
 be called. Tested witrh glibc-2.13 (from debian wheezy). To build, just type
 (assuming you have a C compiler and the standard libs installed)
