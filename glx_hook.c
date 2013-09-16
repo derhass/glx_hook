@@ -339,7 +339,7 @@ extern void glXSwapIntervalEXT(void *dpy, unsigned long drawable,
 				int interval)
 {
 	interval=GH_swap_interval(interval);
-	if (interval < 1) {
+	if (interval < 0) {
 		/* ignore the call */
 		return;
 	}
@@ -351,7 +351,7 @@ extern void glXSwapIntervalEXT(void *dpy, unsigned long drawable,
 extern int glXSwapIntervalSGI(int interval)
 {
 	interval=GH_swap_interval(interval);
-	if (interval < 1) {
+	if (interval < 0) {
 		/* ignore the call */
 		return 0; /* success */
 	}
@@ -363,7 +363,7 @@ extern int glXSwapIntervalSGI(int interval)
 extern int glXSwapIntervalMESA(int interval)
 {
 	interval=GH_swap_interval(interval);
-	if (interval < 1) {
+	if (interval < 0) {
 		/* ignore the call */
 		return 0; /* success */
 	}
