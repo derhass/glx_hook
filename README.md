@@ -8,9 +8,9 @@ __GL_SYNC_TO_VBLANK environment variable are actually overriden by an
 application using GLX_EXT_swap_control or GLX_SGI_swap_control extensions.
 
 This tool works by intercepting calls to those functions and exchanging the
-value (or silently ignoring this call altoghether, so that you driver
+value (or silently ignoring the calls altoghether, so that you driver
 settings become effective). To do so, it is using the (in)famous LD_PRELOAD
-approch.
+approach.
 
 ### USAGE:
 
@@ -26,11 +26,11 @@ where $mode controls how the values are exchanged. Valid modes are
 * min=$x: set interval to at least $x
 * max=$x: set interval to at most $x
 
-NOTE: The tool currently only changes values forwarded to the swap interval
+NOTE: This tool currently only changes values forwarded to the swap interval
 functions, or ignores these calls completely, but never adds new calls
 to set the swap interval. If the app doesn't do it, this tool does nothing.
 
-Further enivornmet variables controlling the behavior
+Further environment variables controlling the behavior:
 * GH_VERBOSE=$level: control level of verbosity (0 to 5)
 * GH_VERBOSE_FILE=$file: redirect verbose output to $file (default is to use
 			   standard error stream)
@@ -38,11 +38,11 @@ Further enivornmet variables controlling the behavior
 ### INSTALLATION:
 
 This requires glibc, as we call some internal glibc functions not intended to
-be called. Tested witrh glibc-2.13 (from debian wheezy). To build, just type
-(assuming you have a C compiler and the standard libs installed)
+be called. Tested with glibc-2.13 (from debian wheezy). To build, just type
 
 $ make
 
+(assuming you have a C compiler and the standard libs installed).
 Finally copy the glx_hook.so to where you like it. For a debug build, do
 
 $ make DEBUG=1
