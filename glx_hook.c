@@ -7,6 +7,7 @@
 #include <string.h>
 #include <stdarg.h>
 #include <ctype.h>
+#include <limits.h>
 
 /***************************************************************************
  * MESSAGE OUTPUT                                                          *
@@ -66,6 +67,13 @@ static void GH_verbose(int level, const char *fmt, ...)
 /***************************************************************************
  * SWAP INTERVAL LOGIC                                                     *
  ***************************************************************************/
+
+/* we use this value as swap interval to mark the situation that we should
+ * not set the swap interval at all. Note that with 
+ * GLX_EXT_swap_control_tear, negative intervals are allowed, and the 
+ * absolute value specifies the real interval, so we use just INT_MIN to 
+ * avoid conflicts with values an application might set. */
+#define GH_SWAP_DONT_SET	INT_MIN
 
 typedef enum {
 	GH_SWAP_MODE_NOP=0,	/* do not change anything */
@@ -138,7 +146,7 @@ static int GH_swap_interval_for_cfg(const volatile GH_config *cfg, int interval)
 
 	switch(cfg->mode) {
 		case GH_SWAP_MODE_IGNORE:
-			new_interval=-1;
+			new_interval=GH_SWAP_DONT_SET;
 			break;
 		case GH_SWAP_MODE_CLAMP:
 			new_interval=interval;
@@ -339,7 +347,7 @@ extern void glXSwapIntervalEXT(void *dpy, unsigned long drawable,
 				int interval)
 {
 	interval=GH_swap_interval(interval);
-	if (interval < 0) {
+	if (interval == GH_SWAP_DONT_SET) {
 		/* ignore the call */
 		return;
 	}
@@ -351,7 +359,7 @@ extern void glXSwapIntervalEXT(void *dpy, unsigned long drawable,
 extern int glXSwapIntervalSGI(int interval)
 {
 	interval=GH_swap_interval(interval);
-	if (interval < 0) {
+	if (interval == GH_SWAP_DONT_SET) {
 		/* ignore the call */
 		return 0; /* success */
 	}
@@ -363,7 +371,7 @@ extern int glXSwapIntervalSGI(int interval)
 extern int glXSwapIntervalMESA(int interval)
 {
 	interval=GH_swap_interval(interval);
-	if (interval < 0) {
+	if (interval == GH_SWAP_DONT_SET) {
 		/* ignore the call */
 		return 0; /* success */
 	}
