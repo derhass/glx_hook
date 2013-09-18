@@ -30,22 +30,24 @@ NOTE: This tool currently only changes values forwarded to the swap interval
 functions, or ignores these calls completely, but never adds new calls
 to set the swap interval. If the app doesn't do it, this tool does nothing.
 
-NVidia is promoting a feature called "apdative vsync" where a "late" buffer
-swap is done immediately instead of beeing delayed to the next frame. This 
-feature is exposed via the GLX_EXT_swap_control_tear extension. If this is
-prevented, negative intervals enable adaptive vsync with the absolute
+NVidia is promoting a feature called "adaptive vsync" where a "late" buffer
+swap is done immediately instead of beeing delayed to the next sync interval.
+This feature is exposed via the GLX_EXT_swap_control_tear extension. If this
+is present, negative intervals enable adaptive vsync with the absolute
 value beeing the swap interval. The GH_SWAP_TEAR environment variable can
-be used to control this feature (NOTE: we do not check for the presence
-of this extension. Negative swap intervals are invalid if the extension is
-not present. So if you enable adaptive vsync without your driver supporting
-the calls will fail. Most likely, the application won't care and no swap
-interval will be effective)
+be used to control this feature: 
+
 * raw: do not treat positive and negative intervals as different. This has
 the effect that you for example could do a clamp=-1,1
 * keep: keep the adaptive vsync setting, modify only the absoulte value
 * disable: always disable adaptive vsync
 * enable: always enable adaptive vsync
 * invert: enable adaptive vsync if the app disables it and vice versa
+
+NOTE: we do not check for the presence of this extension. Negative swap
+intervals are invalid if the extension is not present. So if you enable
+adaptive vsync without your driver supporting it, the calls will fail. Most
+likely, the application won't care and no swap interval will be set.
 
 Further environment variables controlling the behavior:
 * GH_VERBOSE=$level: control level of verbosity (0 to 5)
