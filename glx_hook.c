@@ -75,6 +75,7 @@ static void GH_verbose(int level, const char *fmt, ...)
  * avoid conflicts with values an application might set. */
 #define GH_SWAP_DONT_SET	INT_MIN
 
+/* possible GH_SWAP_MODEs */
 typedef enum {
 	GH_SWAP_MODE_NOP=0,	/* do not change anything */
 	GH_SWAP_MODE_IGNORE,	/* ignore all attempts to set swap interval */
@@ -88,12 +89,24 @@ typedef enum {
 	GH_SWAP_MODES_COUNT
 } GH_swap_mode;
 
+/* possible GH_SWAP_TEAR modes */
+typedef enum {
+	GH_SWAP_TEAR_RAW,	/* handle interval as if normal */
+	GH_SWAP_TEAR_KEEP,	/* keep tearing control as requested */
+	GH_SWAP_TEAR_DISABLE,	/* always disbale adaptive vsync */
+	GH_SWAP_TEAR_ENABLE,	/* enable adaptive vsync */
+	GH_SWAP_TEAR_INVERT,	/* could one ever need this? */
+	/* always add new elements here */
+	GH_SWAP_TEAR_COUNT
+} GH_swap_tear;
+
 typedef struct {
 	GH_swap_mode swap_mode;
+	GH_swap_tear swap_tear;
 	int swap_param[2];
 } GH_config;
 
-static void GH_config_from_str(GH_config volatile *cfg, const char *str)
+static void GH_swap_mode_from_str(GH_config volatile *cfg, const char *str)
 {
 	static const char *mode_str[GH_SWAP_MODES_COUNT+1]={
 		"nop",
@@ -137,11 +150,41 @@ static void GH_config_from_str(GH_config volatile *cfg, const char *str)
 	while(*str && !isdigit(*str))
 		str++;
 	cfg->swap_param[1]=(int)strtol(str, &nstr,0);
-	GH_verbose(GH_MSG_DEBUG, "CONFIG: %d %d %d\n",
-		cfg->swap_mode,cfg->swap_param[0],cfg->swap_param[1]);
+	GH_verbose(GH_MSG_DEBUG, "SWAP_MODE: %d %d %d\n",
+				cfg->swap_mode,cfg->swap_param[0],cfg->swap_param[1]);
 }
 
-static int GH_swap_interval_for_cfg(const volatile GH_config *cfg, int interval)
+static void GH_swap_tear_from_str(GH_config volatile *cfg, const char *str)
+{
+	static const char *mode_str[GH_SWAP_TEAR_COUNT+1]={
+		"raw",
+		"keep",
+		"disable",
+		"enable",
+		"invert",
+
+		NULL
+	};
+
+	int idx;
+
+	cfg->swap_tear=GH_SWAP_TEAR_KEEP;
+	
+	if (str == NULL)
+		return;
+
+	for (idx=0; mode_str[idx]; idx++) {
+		if (!strcmp(str, mode_str[idx])) {
+			break;
+		}
+	}
+
+	if (idx >= 0 && idx<(int)GH_SWAP_MODES_COUNT) {
+		cfg->swap_tear=(GH_swap_mode)idx;
+	}
+}
+
+static int GH_swap_interval_absolute(const volatile GH_config *cfg, int interval)
 {
 	int new_interval;
 
@@ -180,22 +223,69 @@ static int GH_swap_interval_for_cfg(const volatile GH_config *cfg, int interval)
 		default:
 			new_interval=interval;
 	}
-	GH_verbose(GH_MSG_INFO,"swap interval %d -> %d\n", interval, new_interval);
 
+	GH_verbose(GH_MSG_INFO,"swap interval %d -> %d\n", interval, new_interval);
 	return new_interval;
+}
+
+static int GH_swap_interval_base(const volatile GH_config *cfg, int interval)
+{
+	int sign_interval;
+	int abs_interval;
+	int new_interval;
+
+	if (cfg->swap_tear == GH_SWAP_TEAR_RAW) {
+		sign_interval=0;
+		abs_interval=interval; /* moght be negative */
+	} else 	if (interval < 0) {
+		sign_interval=-1;
+		abs_interval=-interval;
+	} else {
+		sign_interval=1;
+		abs_interval=interval;
+	}
+
+	abs_interval=GH_swap_interval_absolute(cfg, abs_interval);
+	if (abs_interval == GH_SWAP_DONT_SET) {
+		GH_verbose(GH_MSG_INFO,"swap interval %d setting ignored\n",
+					interval);
+		return GH_SWAP_DONT_SET;
+	}
+
+	/* set sign based on GH_SWAP_TEAR mode */
+	switch (cfg->swap_tear) {
+		case GH_SWAP_TEAR_KEEP:
+			new_interval=abs_interval * sign_interval;
+			break;
+		case GH_SWAP_TEAR_DISABLE:
+			new_interval=abs_interval;
+			break;
+		case GH_SWAP_TEAR_ENABLE:
+			new_interval=-abs_interval;
+			break;
+		case GH_SWAP_TEAR_INVERT:
+			new_interval=abs_interval * (-sign_interval);
+			break;
+		default:
+			new_interval=abs_interval;	
+	}
+
+	GH_verbose(GH_MSG_INFO,"swap interval %d -> %d\n", interval, new_interval);
+	return interval;
 }
 
 static int GH_swap_interval(int interval)
 {
 	static pthread_mutex_t mutex=PTHREAD_MUTEX_INITIALIZER;
-	static volatile GH_config cfg={GH_SWAP_MODES_COUNT, {0,1}};
+	static volatile GH_config cfg={GH_SWAP_MODES_COUNT, GH_SWAP_TEAR_KEEP, {0,1}};
 
 	pthread_mutex_lock(&mutex);
 	if (cfg.swap_mode >= GH_SWAP_MODES_COUNT) {
-		GH_config_from_str(&cfg, getenv("GH_SWAP_MODE"));
+		GH_swap_mode_from_str(&cfg, getenv("GH_SWAP_MODE"));
+		GH_swap_tear_from_str(&cfg, getenv("GH_SWAP_TEAR"));
 	}
 	pthread_mutex_unlock(&mutex);
-	return GH_swap_interval_for_cfg(&cfg, interval);
+	return GH_swap_interval_base(&cfg, interval);
 }
 
 
