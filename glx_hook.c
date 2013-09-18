@@ -86,11 +86,11 @@ typedef enum {
 	GH_SWAP_MODE_MAX,	/* force interval to <= a */
 	/* always add new elements here */
 	GH_SWAP_MODES_COUNT
-} GH_mode;
+} GH_swap_mode;
 
 typedef struct {
-	GH_mode mode;
-	int value[2];
+	GH_swap_mode swap_mode;
+	int swap_param[2];
 } GH_config;
 
 static void GH_config_from_str(GH_config volatile *cfg, const char *str)
@@ -111,7 +111,7 @@ static void GH_config_from_str(GH_config volatile *cfg, const char *str)
 	int idx;
 	char *nstr;
 
-	cfg->mode=GH_SWAP_MODE_NOP;
+	cfg->swap_mode=GH_SWAP_MODE_NOP;
 	
 	if (str == NULL)
 		return;
@@ -124,7 +124,7 @@ static void GH_config_from_str(GH_config volatile *cfg, const char *str)
 	}
 
 	if (idx >= 0 && idx<(int)GH_SWAP_MODES_COUNT) {
-		cfg->mode=(GH_mode)idx;
+		cfg->swap_mode=(GH_swap_mode)idx;
 	}
 
 	str += l;
@@ -132,31 +132,32 @@ static void GH_config_from_str(GH_config volatile *cfg, const char *str)
 	/* read up to 2 ints as arguments */
 	while(*str && !isdigit(*str))
 		str++;
-	cfg->value[0]=(int)strtol(str, &nstr, 0);
+	cfg->swap_param[0]=(int)strtol(str, &nstr, 0);
 	str=nstr;
 	while(*str && !isdigit(*str))
 		str++;
-	cfg->value[1]=(int)strtol(str, &nstr,0);
-	GH_verbose(GH_MSG_DEBUG, "CONFIG: %d %d %d\n",cfg->mode,cfg->value[0],cfg->value[1]);
+	cfg->swap_param[1]=(int)strtol(str, &nstr,0);
+	GH_verbose(GH_MSG_DEBUG, "CONFIG: %d %d %d\n",
+		cfg->swap_mode,cfg->swap_param[0],cfg->swap_param[1]);
 }
 
 static int GH_swap_interval_for_cfg(const volatile GH_config *cfg, int interval)
 {
 	int new_interval;
 
-	switch(cfg->mode) {
+	switch(cfg->swap_mode) {
 		case GH_SWAP_MODE_IGNORE:
 			new_interval=GH_SWAP_DONT_SET;
 			break;
 		case GH_SWAP_MODE_CLAMP:
 			new_interval=interval;
-			if (new_interval < cfg->value[0])
-				new_interval=cfg->value[0];
-			if (new_interval > cfg->value[1])
-				interval=cfg->value[1];
+			if (new_interval < cfg->swap_param[0])
+				new_interval=cfg->swap_param[0];
+			if (new_interval > cfg->swap_param[1])
+				interval=cfg->swap_param[1];
 			break;
 		case GH_SWAP_MODE_FORCE:
-			new_interval=cfg->value[0];
+			new_interval=cfg->swap_param[0];
 			break;
 		case GH_SWAP_MODE_DISABLE:
 			new_interval=0;
@@ -168,13 +169,13 @@ static int GH_swap_interval_for_cfg(const volatile GH_config *cfg, int interval)
 			break;
 		case GH_SWAP_MODE_MIN:
 			new_interval=interval;
-			if (new_interval < cfg->value[0])
-				new_interval=cfg->value[0];
+			if (new_interval < cfg->swap_param[0])
+				new_interval=cfg->swap_param[0];
 			break;
 		case GH_SWAP_MODE_MAX:
 			new_interval=interval;
-			if (new_interval > cfg->value[0])
-				new_interval=cfg->value[0];
+			if (new_interval > cfg->swap_param[0])
+				new_interval=cfg->swap_param[0];
 			break;
 		default:
 			new_interval=interval;
@@ -190,7 +191,7 @@ static int GH_swap_interval(int interval)
 	static volatile GH_config cfg={GH_SWAP_MODES_COUNT, {0,1}};
 
 	pthread_mutex_lock(&mutex);
-	if (cfg.mode >= GH_SWAP_MODES_COUNT) {
+	if (cfg.swap_mode >= GH_SWAP_MODES_COUNT) {
 		GH_config_from_str(&cfg, getenv("GH_SWAP_MODE"));
 	}
 	pthread_mutex_unlock(&mutex);
