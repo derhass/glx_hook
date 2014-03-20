@@ -7,7 +7,7 @@ CFLAGS += -O2 -DNDEBUG
 endif
 
 glx_hook.so: glx_hook.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -shared -fPIC -Bsymbolic -o $@ $<
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -shared -fPIC -Bsymbolic -pthread -o $@ $<
 
 .PHONY: clean
 clean: 

@@ -54,6 +54,14 @@ Further environment variables controlling the behavior:
 * GH_VERBOSE_FILE=$file: redirect verbose output to $file (default is to use
 			   standard error stream)
 
+### EXPERIMENTAL FEATURES:
+
+Set GH_SWAPBUFFERS=$n to only execute every $n-th buffer swap. This might be
+useful for games where all game logic is implemented in the same loop as
+the rendering, and you want vsync on but stilll a higher frequency for the loop.
+Currently, there is no adaptive mode, so you need to have $n times the framerate
+to not miss any display frames.
+
 ### INSTALLATION:
 
 This requires glibc, as we call some internal glibc functions not intended to

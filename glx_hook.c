@@ -13,6 +13,24 @@
 #include <GL/glxext.h>
 
 /***************************************************************************
+ * helpers                                                                 *
+ ***************************************************************************/
+
+static int
+get_envi(const char *name, int def)
+{
+	const char *s=getenv(name);
+	int i;
+
+	if (s) {
+		i=(int)strtol(s,NULL,0);
+	} else {
+		i=def;
+	}
+	return i;
+}
+
+/***************************************************************************
  * MESSAGE OUTPUT                                                          *
  ***************************************************************************/
 
@@ -41,11 +59,7 @@ static void GH_verbose(int level, const char *fmt, ...)
 	va_list args;
 
 	if (verbosity < 0) {
-		const char *gh_verbose=getenv("GH_VERBOSE");
-		if (gh_verbose)
-			verbosity=(int)strtol(gh_verbose,NULL,0);
-		if (verbosity < 0)
-			verbosity=GH_MSG_LEVEL_DEFAULT;
+		verbosity=get_envi("GH_VERBOSE", GH_MSG_LEVEL_DEFAULT);
 	}
 
 	if (level > verbosity) {
@@ -139,6 +153,10 @@ static Bool (* volatile GH_glXMakeCurrent)(Display *, GLXDrawable, GLXContext);
 static Bool (* volatile GH_glXMakeContextCurrent)(Display *, GLXDrawable, GLXDrawable, GLXContext);
 static Bool (* volatile GH_glXMakeCurrentReadSGI)(Display *, GLXDrawable, GLXDrawable, GLXContext);
 
+/* function pointers we just might qeury */
+static void (* volatile GH_glFlush)(void);
+static void (* volatile GH_glFinish)(void);
+
 /* Resolve an unintercepted symbol via the original dlsym() */
 static void *GH_dlsym_next(const char *name)
 {
@@ -162,6 +180,8 @@ typedef struct gl_context_s {
 	GLXDrawable draw;
 	GLXDrawable read;
 	unsigned int flags;
+	int swapbuffers;
+	int swapbuffer_cnt;
 	struct gl_context_s *next;
 } gl_context_t;
 
@@ -192,6 +212,8 @@ create_ctx(GLXContext ctx)
 		glc->ctx=ctx;
 		glc->draw=None;
 		glc->read=None;
+		glc->swapbuffers=0;
+		glc->swapbuffer_cnt=0;
 		glc->flags=0;
 	}
 	return glc;
@@ -234,7 +256,15 @@ remove_ctx(GLXContext ctx)
 			ctx_list=glc->next;
 	}
 	pthread_mutex_unlock(&ctx_mutex);
-	destroy_ctx(glc);
+	if (glc) {
+		destroy_ctx(glc);
+	}
+}
+
+static void
+read_config(gl_context_t *glc)
+{
+	glc->swapbuffers=get_envi("GH_SWAPBUFFERS",0);
 }
 
 static void
@@ -255,11 +285,14 @@ create_context(GLXContext ctx)
 		GH_GET_PTR(glXMakeCurrent);
 		GH_GET_PTR(glXMakeContextCurrent);
 		GH_GET_PTR(glXMakeCurrentReadSGI);
+		GH_GET_PTR(glFlush);
+		GH_GET_PTR(glFinish);
 	}
 	pthread_mutex_unlock(&ctx_mutex);
 	
 	glc=create_ctx(ctx);
 	if (glc) {
+		read_config(glc);
 		/* add to our list */
 		add_ctx(glc);
 	} else {
@@ -732,13 +765,25 @@ extern int glXSwapIntervalMESA(unsigned int interval)
 
 /* ---------- Swap Buffers ---------- */
 
-#ifndef NDEBUG
 extern void glXSwapBuffers(Display *dpy, GLXDrawable drawable)
 {
-	GH_verbose(GH_MSG_INFO,"SwapBuffers\n");
-	GH_glXSwapBuffers(dpy, drawable);
+	gl_context_t *glc=(gl_context_t*)pthread_getspecific(ctx_current);
+
+	if (glc) {
+		if (++glc->swapbuffer_cnt==glc->swapbuffers) {
+			GH_glXSwapBuffers(dpy, drawable);
+			glc->swapbuffer_cnt=0;
+		} else {
+			/* GH_glFinish(); */
+			GH_glFlush();
+		}
+	} else {
+		GH_verbose(GH_MSG_WARNING,"SwapBuffers called without a context\n");
+		GH_GET_PTR(glXSwapBuffers);
+		GH_glXSwapBuffers(dpy, drawable);
+	}
+
 }
-#endif
 
 /***************************************************************************
  * LIST OF INTERCEPTED FUNCTIONS                                           *
@@ -767,6 +812,8 @@ static void* GH_get_interceptor(const char *name, GH_resolve_func query,
 		return func; \
 	}
 
+	static int do_swapbuffers=-1;
+
 	GH_INTERCEPT(dlsym);
 	GH_INTERCEPT(dlvsym);
 	GH_INTERCEPT(glXGetProcAddress);
@@ -783,9 +830,12 @@ static void* GH_get_interceptor(const char *name, GH_resolve_func query,
 	GH_INTERCEPT(glXMakeCurrent);
 	GH_INTERCEPT(glXMakeContextCurrent);
 	GH_INTERCEPT(glXMakeCurrentReadSGI);
-#ifndef NDEBUG
-	GH_INTERCEPT(glXSwapBuffers);
-#endif
+	if (do_swapbuffers) {
+		if (do_swapbuffers < 0)
+			do_swapbuffers=get_envi("GH_SWAPBUFFERS", 0);
+		if (do_swapbuffers)
+			GH_INTERCEPT(glXSwapBuffers);
+	}
 	return NULL;
 }
 
