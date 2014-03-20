@@ -9,6 +9,9 @@
 #include <ctype.h>
 #include <limits.h>
 
+#include <GL/glx.h>
+#include <GL/glxext.h>
+
 /***************************************************************************
  * MESSAGE OUTPUT                                                          *
  ***************************************************************************/
@@ -62,6 +65,244 @@ static void GH_verbose(int level, const char *fmt, ...)
 	vfprintf(output_stream, fmt, args);
 	va_end(args);
 	fflush(output_stream);
+}
+
+/***************************************************************************
+ * FUNCTION INTERCEPTOR LOGIC                                              *
+ ***************************************************************************/
+
+typedef void (*GH_fptr)();
+typedef void * (*GH_resolve_func)(const char *);
+
+/* mutex used during GH_dlsym_internal () */
+static pthread_mutex_t GH_mutex=PTHREAD_MUTEX_INITIALIZER;
+
+/* Mutex for the function pointers. We only guard the
+ * if (ptr == NULL) ptr=...; part. The pointers will never
+ * change after being set to a non-NULL value for the first time,
+ * so it is safe to dereference them without locking */
+static pthread_mutex_t GH_fptr_mutex=PTHREAD_MUTEX_INITIALIZER;
+
+/* THIS IS AN EVIL HACK: we directly call _dl_sym() of the glibc */
+extern void *_dl_sym(void *, const char *, void (*)() );
+
+/* Wrapper function called in place of dlsym(), since we intercept dlsym().
+ * We use this ONLY to get the original dlsym() itself, all other symbol
+ * resolutions are done via that original function, then.
+ */
+static void *GH_dlsym_internal(void *handle, const char *name)
+{
+	void *ptr;
+
+	/* ARGH: we are bypassing glibc's locking for dlsym(), so we
+	 * must do this on our own */
+	pthread_mutex_lock(&GH_mutex);
+
+	/* Third argument is the address of the caller, (glibc uses stack
+	 * unwinding internally to get this),  we just use the address of our
+	 * wrapper function itself, which is wrong when this is called on
+	 * behalf of the real application doing a dlsycm, but we do not
+	 *  care... */
+	ptr=_dl_sym(handle, name, (void (*)())GH_dlsym_internal);
+
+	pthread_mutex_unlock(&GH_mutex);
+	return ptr;
+}
+
+/* Wrapper funtcion to query the original dlsym() function avoiding
+ * recursively calls to the interceptor dlsym() below */
+static void *GH_dlsym_internal_next(const char *name)
+{
+	return GH_dlsym_internal(RTLD_NEXT, name);
+}
+
+/* return intercepted function pointer for a symbol */
+static void *GH_get_interceptor(const char*, GH_resolve_func, const char *);
+
+/* function pointers to call the real functions that we did intercept */
+static void * (* volatile GH_dlsym)(void *, const char*)=NULL;
+static void * (* volatile GH_dlvsym)(void *, const char*, const char *)=NULL;
+static GH_fptr (* volatile GH_glXGetProcAddress)(const char*)=NULL;
+static GH_fptr (* volatile GH_glXGetProcAddressARB)(const char *)=NULL;
+static void (* volatile GH_glXSwapBuffers)(Display *, GLXDrawable);
+static void (* volatile GH_glXSwapIntervalEXT)(Display *, GLXDrawable, int);
+static int (* volatile GH_glXSwapIntervalSGI)(int);
+static int (* volatile GH_glXSwapIntervalMESA)(unsigned int);
+static GLXContext (* volatile GH_glXCreateContext)(Display*, XVisualInfo *, GLXContext, Bool);
+static GLXContext (* volatile GH_glXCreateNewContext)(Display *, GLXFBConfig, int, GLXContext, Bool);
+static GLXContext (* volatile GH_glXCreateContextAttribsARB)(Display *, GLXFBConfig, GLXContext, Bool, const int *);
+static GLXContext (* volatile GH_glXImportContextEXT)(Display *, GLXContextID);
+static GLXContext (* volatile GH_glXCreateContextWithConfigSGIX)(Display *, GLXFBConfigSGIX, int, GLXContext, Bool);
+static void (* volatile GH_glXDestroyContext)(Display *, GLXContext);
+static void (* volatile GH_glXFreeContextEXT)(Display *, GLXContext);
+static Bool (* volatile GH_glXMakeCurrent)(Display *, GLXDrawable, GLXContext);
+static Bool (* volatile GH_glXMakeContextCurrent)(Display *, GLXDrawable, GLXDrawable, GLXContext);
+static Bool (* volatile GH_glXMakeCurrentReadSGI)(Display *, GLXDrawable, GLXDrawable, GLXContext);
+
+/* Resolve an unintercepted symbol via the original dlsym() */
+static void *GH_dlsym_next(const char *name)
+{
+	return GH_dlsym(RTLD_NEXT, name);
+}
+
+/* helper macro: query the symbol pointer if it is NULL
+ * handle the locking */
+#define GH_GET_PTR(func) \
+	pthread_mutex_lock(&GH_fptr_mutex); \
+	if(GH_ ##func == NULL) \
+		GH_ ##func = GH_dlsym_next(#func);\
+	pthread_mutex_unlock(&GH_fptr_mutex)
+
+/***************************************************************************
+ * GL context tracking                                                     *
+ ***************************************************************************/
+
+typedef struct gl_context_s {
+	GLXContext ctx;
+	GLXDrawable draw;
+	GLXDrawable read;
+	unsigned int flags;
+	struct gl_context_s *next;
+} gl_context_t;
+
+/* flag bits */
+#define GH_GL_CURRENT		0x1
+
+static gl_context_t * volatile ctx_list=NULL;
+static volatile int ctx_firsttime=1;
+static pthread_mutex_t ctx_mutex=PTHREAD_MUTEX_INITIALIZER;
+static pthread_key_t ctx_current;
+
+static void
+add_ctx(gl_context_t *glc)
+{
+	pthread_mutex_lock(&ctx_mutex);
+	glc->next=ctx_list;
+	ctx_list=glc;
+	pthread_mutex_unlock(&ctx_mutex);
+}
+
+static gl_context_t *
+create_ctx(GLXContext ctx)
+{
+	gl_context_t *glc;
+
+	glc=malloc(sizeof(*glc));
+	if (glc) {
+		glc->ctx=ctx;
+		glc->draw=None;
+		glc->read=None;
+		glc->flags=0;
+	}
+	return glc;
+}
+
+static void
+destroy_ctx(gl_context_t *glc)
+{
+	free(glc);
+}
+
+static gl_context_t *
+find_ctx(GLXContext ctx)
+{
+	gl_context_t *glc;
+
+	pthread_mutex_lock(&ctx_mutex);
+	for (glc=ctx_list; glc; glc=glc->next)
+		if (glc->ctx == ctx)
+			break;
+	pthread_mutex_unlock(&ctx_mutex);
+	return glc;
+}
+
+static void
+remove_ctx(GLXContext ctx)
+{
+	gl_context_t *glc,*prev=NULL;
+
+	pthread_mutex_lock(&ctx_mutex);
+	for (glc=ctx_list; glc; glc=glc->next) {
+		if (glc->ctx == ctx)
+			break;
+		prev=glc;
+	}
+	if (glc) {
+		if (prev) 
+			prev->next=glc->next;
+		else
+			ctx_list=glc->next;
+	}
+	pthread_mutex_unlock(&ctx_mutex);
+	destroy_ctx(glc);
+}
+
+static void
+create_context(GLXContext ctx)
+{
+	gl_context_t *glc;
+
+	GH_verbose(GH_MSG_DEBUG, "created ctx %p\n",ctx);
+
+	pthread_mutex_lock(&ctx_mutex);
+	if (ctx_firsttime) {
+		ctx_firsttime=0;
+		pthread_key_create(&ctx_current, NULL);
+		pthread_setspecific(ctx_current, NULL);
+		/* query the function pointers for the standad function
+		 * which might be often called ... */
+		GH_GET_PTR(glXSwapBuffers);
+		GH_GET_PTR(glXMakeCurrent);
+		GH_GET_PTR(glXMakeContextCurrent);
+		GH_GET_PTR(glXMakeCurrentReadSGI);
+	}
+	pthread_mutex_unlock(&ctx_mutex);
+	
+	glc=create_ctx(ctx);
+	if (glc) {
+		/* add to our list */
+		add_ctx(glc);
+	} else {
+		GH_verbose(GH_MSG_ERROR, "out of memory\n");
+	}
+
+}
+
+static void
+destroy_context(GLXContext ctx)
+{
+	GH_verbose(GH_MSG_INFO, "destroyed ctx %p\n",ctx);
+	remove_ctx(ctx);
+}
+
+static void
+make_current(GLXContext ctx, GLXDrawable draw, GLXDrawable read)
+{
+	gl_context_t *glc;
+
+	glc=(gl_context_t*)pthread_getspecific(ctx_current);
+	if (glc) {
+		/* old context */
+		glc->flags &= ~GH_GL_CURRENT;
+		GH_verbose(GH_MSG_DEBUG, "unbound context %p\n",glc->ctx);
+	}
+	
+	if (ctx) {
+		glc=find_ctx(ctx);
+
+		if (glc == NULL) {
+			GH_verbose(GH_MSG_WARNING, "app tried to make current non-existing context %p\n",ctx);
+		} else {
+			glc->draw=draw;
+			glc->read=read;
+			glc->flags |= GH_GL_CURRENT;
+			GH_verbose(GH_MSG_DEBUG, "made current context %p\n",ctx);
+		}
+	} else {
+		glc=NULL;
+	}
+
+	pthread_setspecific(ctx_current, glc);
 }
 
 /***************************************************************************
@@ -290,83 +531,6 @@ static int GH_swap_interval(int interval)
 
 
 /***************************************************************************
- * FUNCTION INTERCEPTOR LOGIC                                              *
- ***************************************************************************/
-
-typedef void (*GH_fptr)();
-typedef void * (*GH_resolve_func)(const char *);
-
-/* mutex used during GH_dlsym_internal () */
-static pthread_mutex_t GH_mutex=PTHREAD_MUTEX_INITIALIZER;
-
-/* Mutex for the function pointers. We only guard the
- * if (ptr == NULL) ptr=...; part. The pointers will never
- * change after being set to a non-NULL value for the first time,
- * so it is safe to dereference them without locking */
-static pthread_mutex_t GH_fptr_mutex=PTHREAD_MUTEX_INITIALIZER;
-
-/* THIS IS AN EVIL HACK: we directly call _dl_sym() of the glibc */
-extern void *_dl_sym(void *, const char *, void (*)() );
-
-/* Wrapper function called in place of dlsym(), since we intercept dlsym().
- * We use this ONLY to get the original dlsym() itself, all other symbol
- * resolutions are done via that original function, then.
- */
-static void *GH_dlsym_internal(void *handle, const char *name)
-{
-	void *ptr;
-
-	/* ARGH: we are bypassing glibc's locking for dlsym(), so we
-	 * must do this on our own */
-	pthread_mutex_lock(&GH_mutex);
-
-	/* Third argument is the address of the caller, (glibc uses stack
-	 * unwinding internally to get this),  we just use the address of our
-	 * wrapper function itself, which is wrong when this is called on
-	 * behalf of the real application doing a dlsycm, but we do not
-	 *  care... */
-	ptr=_dl_sym(handle, name, (void (*)())GH_dlsym_internal);
-
-	pthread_mutex_unlock(&GH_mutex);
-	return ptr;
-}
-
-/* Wrapper funtcion to query the original dlsym() function avoiding
- * recursively calls to the interceptor dlsym() below */
-static void *GH_dlsym_internal_next(const char *name)
-{
-	return GH_dlsym_internal(RTLD_NEXT, name);
-}
-
-/* return intercepted function pointer for a symbol */
-static void *GH_get_interceptor(const char*, GH_resolve_func, const char *);
-
-/* function pointers to call the real functions that we did intercept */
-static void * (* volatile GH_dlsym)(void *, const char*)=NULL;
-static void * (* volatile GH_dlvsym)(void *, const char*, const char *)=NULL;
-static GH_fptr (* volatile GH_glXGetProcAddress)(const char*)=NULL;
-static GH_fptr (* volatile GH_glXGetProcAddressARB)(const char *)=NULL;
-static void (* volatile GH_glXSwapBuffers)(void *, unsigned long);
-static void (* volatile GH_glXSwapIntervalEXT)(void *, unsigned long, int);
-static int (* volatile GH_glXSwapIntervalSGI)(int);
-static int (* volatile GH_glXSwapIntervalMESA)(int);
-static void (*(* volatile GH_foo)(void))(const char *)=NULL;
-
-/* Resolve an unintercepted symbol via the original dlsym() */
-static void *GH_dlsym_next(const char *name)
-{
-	return GH_dlsym(RTLD_NEXT, name);
-}
-
-/* helper macro: query the symbol pointer if it is NULL
- * handle the locking */
-#define GH_GET_PTR(func) \
-	pthread_mutex_lock(&GH_fptr_mutex); \
-	if(GH_ ##func == NULL) \
-		GH_ ##func = GH_dlsym_next(#func);\
-	pthread_mutex_unlock(&GH_fptr_mutex)
-
-/***************************************************************************
  * INTERCEPTED FUNCTIONS: libdl/libc                                       *
  ***************************************************************************/
 
@@ -416,16 +580,16 @@ dlvsym(void *handle, const char *name, const char *version)
 
 /* helper macro to handle both glxGetProcAddress and glXGetProcAddressARB */
 #define GH_GLXGETPROCADDRESS_GENERIC(procname) \
-extern GH_fptr procname(const char *name) \
+extern GH_fptr procname(const GLubyte *name) \
 { \
 	void *interceptor; \
 	GH_fptr ptr; \
 	GH_GET_PTR(procname); \
-	interceptor=GH_get_interceptor(name, \
+	interceptor=GH_get_interceptor((const char *)name, \
 					(GH_resolve_func)GH_ ##procname, \
 					 #procname); \
-	ptr=(interceptor)?(GH_fptr)interceptor:GH_ ##procname(name); \
-	GH_verbose(GH_MSG_DEBUG_INTERCEPTION,#procname "(%s) = %p%s\n",name, ptr, \
+	ptr=(interceptor)?(GH_fptr)interceptor:GH_ ##procname((const char*)name); \
+	GH_verbose(GH_MSG_DEBUG_INTERCEPTION,#procname "(%s) = %p%s\n",(const char *)name, ptr, \
 		interceptor?" [intercepted]":""); \
 	return ptr; \
 }
@@ -433,8 +597,106 @@ extern GH_fptr procname(const char *name) \
 GH_GLXGETPROCADDRESS_GENERIC(glXGetProcAddress)
 GH_GLXGETPROCADDRESS_GENERIC(glXGetProcAddressARB)
 
-/* TARGET FUNCTION: glXSwapIntervalEXT */
-extern void glXSwapIntervalEXT(void *dpy, unsigned long drawable,
+/* ---------- Context Creation ---------- */
+
+extern GLXContext glXCreateContext(Display *dpy, XVisualInfo *vis, GLXContext shareList, Bool direct )
+{
+	GLXContext ctx;
+
+	GH_GET_PTR(glXCreateContext);
+	ctx=GH_glXCreateContext(dpy, vis, shareList, direct);
+	create_context(ctx);
+	return ctx;
+}
+
+extern GLXContext glXCreateNewContext( Display *dpy, GLXFBConfig config, int renderType, GLXContext shareList, Bool direct )
+{
+	GLXContext ctx;
+
+	GH_GET_PTR(glXCreateNewContext);
+	ctx=GH_glXCreateNewContext(dpy, config, renderType, shareList, direct);
+	create_context(ctx);
+	return ctx;
+}
+
+extern GLXContext glXCreateContextAttribsARB (Display * dpy, GLXFBConfig config, GLXContext shareList, Bool direct, const int *attr)
+{
+	GLXContext ctx;
+
+	GH_GET_PTR(glXCreateContextAttribsARB);
+	ctx=GH_glXCreateContextAttribsARB(dpy, config, shareList, direct, attr);
+	create_context(ctx);
+	return ctx;
+}
+
+extern GLXContext glXImportContextEXT (Display *dpy, GLXContextID id)
+{
+	GLXContext ctx;
+
+	GH_GET_PTR(glXImportContextEXT);
+	ctx=GH_glXImportContextEXT(dpy, id);
+	create_context(ctx);
+	return ctx;
+}
+
+extern GLXContext glXCreateContextWithConfigSGIX (Display *dpy, GLXFBConfigSGIX config, int renderType, GLXContext shareList, Bool direct)
+{
+	GLXContext ctx;
+
+	GH_GET_PTR(glXCreateContextWithConfigSGIX);
+	ctx=GH_glXCreateContextWithConfigSGIX(dpy, config, renderType, shareList, direct);
+	create_context(ctx);
+	return ctx;
+}
+
+/* ---------- Context Destruction ---------- */
+
+extern void glXDestroyContext(Display *dpy, GLXContext ctx)
+{
+	GH_GET_PTR(glXDestroyContext);
+	GH_glXDestroyContext(dpy, ctx);
+	destroy_context(ctx);
+}
+
+extern void glXFreeContextEXT(Display *dpy, GLXContext ctx)
+{
+	GH_GET_PTR(glXFreeContextEXT);
+	GH_glXFreeContextEXT(dpy, ctx);
+	destroy_context(ctx);
+}
+
+/* ---------- Current Context Tracking ---------- */
+
+extern Bool glXMakeCurrent(Display *dpy, GLXDrawable drawable, GLXContext ctx)
+{
+	Bool result;
+
+	result=GH_glXMakeCurrent(dpy, drawable, ctx);
+	make_current(ctx, drawable, drawable);
+	return result;
+}
+
+extern Bool glXMakeContextCurrent(Display *dpy, GLXDrawable draw, GLXDrawable read, GLXContext ctx)
+{
+	Bool result;
+
+	result=GH_glXMakeContextCurrent(dpy, draw, read, ctx);
+	make_current(ctx, draw, read);
+	return result;
+}
+
+extern Bool glXMakeCurrentReadSGI(Display *dpy, GLXDrawable draw, GLXDrawable read, GLXContext ctx)
+{
+	Bool result;
+
+	result=GH_glXMakeCurrentReadSGI(dpy, draw, read, ctx);
+	make_current(ctx, draw, read);
+	return result;
+}
+
+/* ---------- Swap Interval---------- */
+
+extern void glXSwapIntervalEXT(Display *dpy, GLXDrawable drawable,
 				int interval)
 {
 	interval=GH_swap_interval(interval);
@@ -446,7 +708,6 @@ extern void glXSwapIntervalEXT(void *dpy, unsigned long drawable,
 	GH_glXSwapIntervalEXT(dpy, drawable, interval);
 }
 
-/* TARGET FUNCTION: glXSwapIntervalSGI */
 extern int glXSwapIntervalSGI(int interval)
 {
 	interval=GH_swap_interval(interval);
@@ -458,10 +719,9 @@ extern int glXSwapIntervalSGI(int interval)
 	return GH_glXSwapIntervalSGI(interval);
 }
 
-/* TARGET FUNCTION: glXSwapIntervalMESA */
-extern int glXSwapIntervalMESA(int interval)
+extern int glXSwapIntervalMESA(unsigned int interval)
 {
-	interval=GH_swap_interval(interval);
+	interval=GH_swap_interval((int)interval);
 	if (interval == GH_SWAP_DONT_SET) {
 		/* ignore the call */
 		return 0; /* success */
@@ -470,11 +730,11 @@ extern int glXSwapIntervalMESA(int interval)
 	return GH_glXSwapIntervalMESA(interval);
 }
 
+/* ---------- Swap Buffers ---------- */
+
 #ifndef NDEBUG
-/* SwapBuffers is only intercepted for testing purposes */
-extern void glXSwapBuffers(void *dpy, unsigned long drawable)
+extern void glXSwapBuffers(Display *dpy, GLXDrawable drawable)
 {
-	GH_GET_PTR(glXSwapBuffers);
 	GH_verbose(GH_MSG_INFO,"SwapBuffers\n");
 	GH_glXSwapBuffers(dpy, drawable);
 }
@@ -513,6 +773,16 @@ static void* GH_get_interceptor(const char *name, GH_resolve_func query,
 	GH_INTERCEPT(glXGetProcAddressARB);
 	GH_INTERCEPT(glXSwapIntervalEXT);
 	GH_INTERCEPT(glXSwapIntervalSGI);
+	GH_INTERCEPT(glXCreateContext);
+	GH_INTERCEPT(glXCreateNewContext);
+	GH_INTERCEPT(glXCreateContextAttribsARB);
+	GH_INTERCEPT(glXImportContextEXT);
+	GH_INTERCEPT(glXCreateContextWithConfigSGIX);
+	GH_INTERCEPT(glXDestroyContext);
+	GH_INTERCEPT(glXFreeContextEXT);
+	GH_INTERCEPT(glXMakeCurrent);
+	GH_INTERCEPT(glXMakeContextCurrent);
+	GH_INTERCEPT(glXMakeCurrentReadSGI);
 #ifndef NDEBUG
 	GH_INTERCEPT(glXSwapBuffers);
 #endif
