@@ -820,6 +820,7 @@ static void* GH_get_interceptor(const char *name, GH_resolve_func query,
 	GH_INTERCEPT(glXGetProcAddressARB);
 	GH_INTERCEPT(glXSwapIntervalEXT);
 	GH_INTERCEPT(glXSwapIntervalSGI);
+	GH_INTERCEPT(glXSwapIntervalMESA);
 	GH_INTERCEPT(glXCreateContext);
 	GH_INTERCEPT(glXCreateNewContext);
 	GH_INTERCEPT(glXCreateContextAttribsARB);
