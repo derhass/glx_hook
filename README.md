@@ -16,6 +16,10 @@ approach.
 
 $ LD_PRELOAD=path/to/glx_hook.so GH_SWAP_MODE=$mode target_binary
 
+or
+
+$ LD_PRELOAD=path/to/glx_hook_bare.so GH_SWAP_MODE=$mode target_binary
+
 where $mode controls how the values are exchanged. Valid modes are
 * nop: keep calls as intended by the application
 * ignore: silently ignore the calls (return success to the application)
@@ -53,6 +57,13 @@ Further environment variables controlling the behavior:
 * GH_VERBOSE=$level: control level of verbosity (0 to 5)
 * GH_VERBOSE_FILE=$file: redirect verbose output to $file (default is to use
 			   standard error stream)
+
+The glx_hook.so version is the full version which tracks GL contexts, and
+allows also for glXSwapBuffers manipulations (see below). However, the GL
+context tracking adds a whole layer of complexity and might fail in some
+scenarios. If you are only interested in the swap interval manipulations,
+you can try to use  the glx_hook_bare.so library, which only tries to deal
+with the bare minimum of glX (and dlsym) functions.
 
 ### EXPERIMENTAL FEATURES:
 

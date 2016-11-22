@@ -1,4 +1,5 @@
 glx_hook.so
+glx_hook_bare.so
 *~
 *.swp
 

@@ -175,6 +175,8 @@ static void *GH_dlsym_next(const char *name)
  * GL context tracking                                                     *
  ***************************************************************************/
 
+#ifdef GH_CONTEXT_TRACKING
+
 typedef struct gl_context_s {
 	GLXContext ctx;
 	GLXDrawable draw;
@@ -337,6 +339,8 @@ make_current(GLXContext ctx, GLXDrawable draw, GLXDrawable read)
 
 	pthread_setspecific(ctx_current, glc);
 }
+
+#endif /* GH_CONTEXT_TRACKING */
 
 /***************************************************************************
  * SWAP INTERVAL LOGIC                                                     *
@@ -630,6 +634,8 @@ extern GH_fptr procname(const GLubyte *name) \
 GH_GLXGETPROCADDRESS_GENERIC(glXGetProcAddress)
 GH_GLXGETPROCADDRESS_GENERIC(glXGetProcAddressARB)
 
+#ifdef GH_CONTEXT_TRACKING
+
 /* ---------- Context Creation ---------- */
 
 extern GLXContext glXCreateContext(Display *dpy, XVisualInfo *vis, GLXContext shareList, Bool direct )
@@ -727,6 +733,8 @@ extern Bool glXMakeCurrentReadSGI(Display *dpy, GLXDrawable draw, GLXDrawable re
 	return result;
 }
 
+#endif /* GH_CONTEXT_TRACKING */
+
 /* ---------- Swap Interval---------- */
 
 extern void glXSwapIntervalEXT(Display *dpy, GLXDrawable drawable,
@@ -765,8 +773,10 @@ extern int glXSwapIntervalMESA(unsigned int interval)
 
 /* ---------- Swap Buffers ---------- */
 
+#ifdef GH_SWAPBUFFERS_INTERCEPT
 extern void glXSwapBuffers(Display *dpy, GLXDrawable drawable)
 {
+#ifdef GH_CONTEXT_TRACKING
 	gl_context_t *glc=(gl_context_t*)pthread_getspecific(ctx_current);
 
 	if (glc) {
@@ -782,8 +792,12 @@ extern void glXSwapBuffers(Display *dpy, GLXDrawable drawable)
 		GH_GET_PTR(glXSwapBuffers);
 		GH_glXSwapBuffers(dpy, drawable);
 	}
-
+#else /* GH_CONTEXT_TRACKING */
+	GH_GET_PTR(glXSwapBuffers);
+	GH_glXSwapBuffers(dpy, drawable);
+#endif /* GH_CONTEXT_TRACKING */
 }
+#endif /* GH_SWAPBUFFERS_INTERCEPT */
 
 /***************************************************************************
  * LIST OF INTERCEPTED FUNCTIONS                                           *
@@ -812,7 +826,9 @@ static void* GH_get_interceptor(const char *name, GH_resolve_func query,
 		return func; \
 	}
 
+#ifdef GH_SWAPBUFFERS_INTERCEPT
 	static int do_swapbuffers=-1;
+#endif
 
 	GH_INTERCEPT(dlsym);
 	GH_INTERCEPT(dlvsym);
@@ -821,6 +837,7 @@ static void* GH_get_interceptor(const char *name, GH_resolve_func query,
 	GH_INTERCEPT(glXSwapIntervalEXT);
 	GH_INTERCEPT(glXSwapIntervalSGI);
 	GH_INTERCEPT(glXSwapIntervalMESA);
+#ifdef GH_CONTEXT_TRACKING
 	GH_INTERCEPT(glXCreateContext);
 	GH_INTERCEPT(glXCreateNewContext);
 	GH_INTERCEPT(glXCreateContextAttribsARB);
@@ -831,12 +848,15 @@ static void* GH_get_interceptor(const char *name, GH_resolve_func query,
 	GH_INTERCEPT(glXMakeCurrent);
 	GH_INTERCEPT(glXMakeContextCurrent);
 	GH_INTERCEPT(glXMakeCurrentReadSGI);
+#endif
+#ifdef GH_SWAPBUFFERS_INTERCEPT
 	if (do_swapbuffers) {
 		if (do_swapbuffers < 0)
 			do_swapbuffers=get_envi("GH_SWAPBUFFERS", 0);
 		if (do_swapbuffers)
 			GH_INTERCEPT(glXSwapBuffers);
 	}
+#endif
 	return NULL;
 }
 
