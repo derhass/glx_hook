@@ -549,7 +549,7 @@ static int GH_swap_interval_base(const volatile GH_config *cfg, int interval)
 	}
 
 	GH_verbose(GH_MSG_INFO,"swap interval %d -> %d\n", interval, new_interval);
-	return interval;
+	return new_interval;
 }
 
 static int GH_swap_interval(int interval)
