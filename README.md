@@ -93,15 +93,15 @@ Use GH_FRAMETIME_FILE=$name to control the output file name (default:
 where $num is the number of the GL context. The output will be one line per frame,
 with the following values:
 
-    CPU GPU latency CPU GPU latency
+    frame_number CPU GPU latency CPU GPU latency
 
 where `CPU` denotes timestamps on the CPU, `GPU` denotes timestamps on the GPU
 and `latency` denotes the latency of the GPU. All values are in nanoseconds.
 The  first three values refer to the time directly before the buffer swap,
 the latter to directly after the swap. The `CPU` and `GPU` values are always
 relative to the buffer swap of the _previous_ frame, and `latency` is just
-the observed latency at the respective timing probe. The first `GH_FRAMETIME_DELAY+1`
-lines of the file are useless.
+the observed latency at the respective timing probe. The data for frame 0 might 
+be useless.
 
 ### INSTALLATION:
 

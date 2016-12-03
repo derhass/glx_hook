@@ -275,6 +275,7 @@ typedef struct {
 	unsigned int cur_pos;		/* the current frame in the delay ring buffer */
 	GH_frametime *frametime;	/* the array of frametimes */
 	unsigned int cur_result;	/* the current result index */
+	unsigned int frame;		/* the current frame */
 	FILE *dump;			/* the stream to dump the results to */
 } GH_frametimes;
 
@@ -346,6 +347,7 @@ frametimes_init(GH_frametimes *ft, GH_frametime_mode mode, unsigned int delay, u
 {
 	ft->cur_pos=0;
 	ft->cur_result=0;
+	ft->frame=0;
 	ft->dump=NULL;
 
 	if (mode >= GH_FRAMETIME_CPU_GPU) {
@@ -462,10 +464,14 @@ frametimes_flush(GH_frametimes *ft)
 
 	GH_verbose(GH_MSG_DEBUG, "frametimes: dumping results of %u frames\n", ft->cur_result);
 	for (i=0; i<ft->cur_result; i++) {
-		cur=&ft->frametime[i * ft->num_timestamps];
-		frametimes_dump_results(ft, cur, prev);
-		prev=cur;
-		fputc('\n', ft->dump);
+		unsigned int frame=ft->frame - ft->cur_result + i;
+		if (frame >= ft->delay) {
+			fprintf(ft->dump, "%u", frame - ft->delay);
+			cur=&ft->frametime[i * ft->num_timestamps];
+			frametimes_dump_results(ft, cur, prev);
+			prev=cur;
+			fputc('\n', ft->dump);
+		}
 	}
 	fflush(ft->dump);
 	/* copy the last result */
@@ -517,6 +523,7 @@ frametimes_finish_frame(GH_frametimes *ft)
 	if (++ft->cur_pos == ft->delay) {
 		ft->cur_pos=0;
 	}
+	++ft->frame;
 	if (++ft->cur_result >= ft->num_results) {
 		frametimes_flush(ft);
 	}
