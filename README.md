@@ -12,6 +12,9 @@ value (or silently ignoring the calls altoghether, so that you driver
 settings become effective). To do so, it is using the (in)famous `LD_PRELOAD`
 approach.
 
+There are also some more advanced features, notably a latency limiter and
+a frametime measurement mode, see the section _Experimental Features_ below.
+
 ### USAGE:
 
     $ LD_PRELOAD=path/to/glx_hook.so GH_SWAP_MODE=$mode target_binary
@@ -67,6 +70,8 @@ with the bare minimum of `glX` (and `dlsym`) functions.
 
 ### EXPERIMENTAL FEATURES:
 
+The following features are only available in `glx_hook.so` (and not `glx_hook_bare.so`):
+
 Set `GH_SWAPBUFFERS=$n` to only execute every `$n`-th buffer swap. This might be
 useful for games where all game logic is implemented in the same loop as
 the rendering, and you want vsync on but stilll a higher frequency for the loop.
@@ -77,7 +82,7 @@ Set `GH_FRAMETIME=$mode` to aquire frame timings.The following modes are
 supported:
 * 0: no frametime measurements (the default)
 * 1: measure frametime on CPU only
-* 2: measure frametimes on CPU and GPU
+* 2: measure frametimes on CPU and GPU (requires a context supporting the `GL_ARB_timer_query` extension)
 
 Use `GH_FRAMETIME_DELAY=$n` to set the delay for the timer queries (default: 3 frames).
 This controls the number of frames the GPU might stay ahead of the CPU. Setting a
@@ -102,6 +107,16 @@ the latter to directly after the swap. The `CPU` and `GPU` values are always
 relative to the buffer swap of the _previous_ frame, and `latency` is just
 the observed latency at the respective timing probe. The data for frame 0 might 
 be useless.
+
+Use `GH_LATENCY=$n` to limit the number of frames the GPU lags behind. The following
+values might be used:
+* -2: no limit (the default)
+* -1: limit to 0, force a sync right _after_ the buffer swap
+* 0: limit to 0, force a sync right _before_ the buffer swap
+* >0: limit the number of pending frames to `$n` (requires a context supporting the `GL_ARB_sync` extension)
+
+This can be helpful in situations where you experience stuttering in a GL application. Preferably,
+you should use `GH_LATENCY=1` to not degrade performance too much.
 
 ### INSTALLATION:
 

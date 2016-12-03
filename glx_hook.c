@@ -182,6 +182,9 @@ static PFNGLDELETEQUERIESPROC GH_glDeleteQueries=NULL;
 static PFNGLGETINTEGER64VPROC GH_glGetInteger64v=NULL;
 static PFNGLQUERYCOUNTERPROC GH_glQueryCounter=NULL;
 static PFNGLGETQUERYOBJECTUI64VPROC GH_glGetQueryObjectui64v=NULL;
+static PFNGLFENCESYNCPROC GH_glFenceSync=NULL;
+static PFNGLDELETESYNCPROC GH_glDeleteSync=NULL;
+static PFNGLCLIENTWAITSYNCPROC GH_glClientWaitSync=NULL;
 
 /* Resolve an unintercepted symbol via the original dlsym() */
 static void *GH_dlsym_next(const char *name)
@@ -238,11 +241,130 @@ GH_get_gl_proc(const char *name)
 	} \
 	(void)0
 
+#ifdef GH_CONTEXT_TRACKING
+
+/***************************************************************************
+ * LATENCY LIMITER                                                         *
+ ***************************************************************************/
+
+
+/* we support different modes for the frame time measurements */
+typedef enum {
+	GH_LATENCY_NOP=-2,		/* do nothing */
+	GH_LATENCY_FINISH_AFTER,	/* force a finish after buffer swaps */
+	GH_LATENCY_FINISH_BEFORE,	/* force a finish before buffer swaps */
+	/* values above 0 indicate use of GL_ARB_sync to limit to n frames */
+} GH_latency_mode;
+
+typedef struct {
+	int latency;
+	GLsync *sync_object;
+	unsigned int cur_pos;
+	GLuint64 wait_timeout;
+} GH_latency;
+
+static int
+latency_gl_init()
+{
+	GH_GET_GL_PROC_OR_FAIL(glFenceSync, GH_MSG_WARNING, -1);
+	GH_GET_GL_PROC_OR_FAIL(glDeleteSync, GH_MSG_WARNING, -1);
+	GH_GET_GL_PROC_OR_FAIL(glClientWaitSync, GH_MSG_WARNING, -1);
+	return 0;
+}
+
+static void
+latency_init(GH_latency *lat, int latency)
+{
+	lat->latency=latency;
+	lat->sync_object=NULL;
+	lat->cur_pos=0;
+	lat->wait_timeout=1*1000000000; /* 1 second */
+
+	if (latency > 0) {
+		if (latency_gl_init()) {
+			lat->latency=GH_LATENCY_FINISH_BEFORE;
+			GH_verbose(GH_MSG_WARNING, "GPU sync not available, using latency mode %d\n",
+					GH_LATENCY_FINISH_BEFORE);
+		}
+	}
+
+	if (lat->latency > 0) {
+		unsigned int cnt=(unsigned)lat->latency;
+		lat->sync_object=malloc(sizeof(*lat->sync_object) * cnt);
+		if (!lat->sync_object) {
+			lat->latency=GH_LATENCY_FINISH_BEFORE;
+			GH_verbose(GH_MSG_WARNING, "out of memory for sync objects, using latency mode %d\n");
+		} else {
+			unsigned int i;
+			for (i=0; i<cnt; i++) {
+				lat->sync_object[i]=NULL;
+			}
+			GH_verbose(GH_MSG_DEBUG, "enabling latency limiter: %d\n",lat->latency);
+		}
+	}
+}
+
+static void
+latency_destroy(GH_latency *lat)
+{
+	if (lat) {
+		if (lat->sync_object && lat->latency > 0) {
+			unsigned int i;
+			for (i=0; i<(unsigned)lat->latency; i++) {
+				if (lat->sync_object[i]) {
+					GH_glDeleteSync(lat->sync_object[i]);
+				}
+			}
+		}
+	}
+}
+
+static void
+latency_before_swap(GH_latency *lat)
+{
+	GLsync sync;
+
+	switch(lat->latency) {
+		case GH_LATENCY_NOP:
+		case GH_LATENCY_FINISH_AFTER:
+			(void)lat;
+			break;
+		case GH_LATENCY_FINISH_BEFORE:
+			GH_glFinish();
+			break;
+		default:
+			if ( (sync=lat->sync_object[lat->cur_pos]) ) {
+				GH_glClientWaitSync(sync, GL_SYNC_FLUSH_COMMANDS_BIT, lat->wait_timeout);
+				/* NOTE: we do not care about the result */
+			}
+	}
+}
+
+static void
+latency_after_swap(GH_latency *lat)
+{
+	switch(lat->latency) {
+		case GH_LATENCY_NOP:
+		case GH_LATENCY_FINISH_BEFORE:
+			(void)lat;
+			break;
+		case GH_LATENCY_FINISH_AFTER:
+			GH_glFinish();
+			break;
+		default:
+			if ( (lat->sync_object[lat->cur_pos]) ) {
+				GH_glDeleteSync(lat->sync_object[lat->cur_pos]);
+			}
+			lat->sync_object[lat->cur_pos]=GH_glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+			if (++lat->cur_pos == (unsigned)lat->latency) {
+				lat->cur_pos=0;
+			}
+	}
+}
+
 /***************************************************************************
  * FRAME TIMING MEASUREMENTS                                               *
  ***************************************************************************/
-
-#ifdef GH_CONTEXT_TRACKING
 
 /* we support different modes for the frame time measurements */
 typedef enum {
@@ -557,6 +679,7 @@ typedef struct gl_context_s {
 	unsigned int num;
 	struct gl_context_s *next;
 	GH_frametimes frametimes;
+	GH_latency latency;
 } gl_context_t;
 
 /* flag bits */
@@ -593,6 +716,7 @@ create_ctx(GLXContext ctx, unsigned int num)
 		glc->num=num;
 
 		frametimes_init(&glc->frametimes, GH_FRAMETIME_NONE, 0, 0, 0, num);
+		latency_init(&glc->latency, GH_LATENCY_NOP);
 	}
 	return glc;
 }
@@ -602,6 +726,7 @@ destroy_ctx(gl_context_t *glc)
 {
 	if (glc) {
 		frametimes_destroy(&glc->frametimes);
+		latency_destroy(&glc->latency);
 		free(glc);
 	}
 }
@@ -661,7 +786,7 @@ create_context(GLXContext ctx)
 	if (!ctx_num) {
 		pthread_key_create(&ctx_current, NULL);
 		pthread_setspecific(ctx_current, NULL);
-		/* query the function pointers for the standad function
+		/* query the function pointers for the standard functions
 		 * which might be often called ... */
 		GH_GET_PTR(glXSwapBuffers);
 		GH_GET_PTR(glXMakeCurrent);
@@ -716,11 +841,13 @@ make_current(GLXContext ctx, GLXDrawable draw, GLXDrawable read)
 				unsigned int ft_delay=get_envui("GH_FRAMETIME_DELAY", 3);
 				unsigned int ft_frames=get_envui("GH_FRAMETIME_FRAMES", 1000);
 				GH_frametime_mode ft_mode=(GH_frametime_mode)get_envi("GH_FRAMETIME", (int)GH_FRAMETIME_NONE);
+				int latency=get_envi("GH_LATENCY", GH_LATENCY_NOP);
 				/* made current for the first time */
 				glc->flags &= ~ GH_GL_NEVER_CURRENT;
 
 				frametimes_init(&glc->frametimes, ft_mode, ft_delay, GH_FRAMETIME_COUNT, ft_frames, glc->num);
 				frametimes_init_base(&glc->frametimes);
+				latency_init(&glc->latency, latency);
 			}
 		}
 	} else {
@@ -1173,15 +1300,18 @@ extern void glXSwapBuffers(Display *dpy, GLXDrawable drawable)
 		frametimes_before_swap(&glc->frametimes);
 		if (glc->swapbuffers > 0) {
 			if (++glc->swapbuffer_cnt==glc->swapbuffers) {
+				latency_before_swap(&glc->latency);
 				GH_glXSwapBuffers(dpy, drawable);
+				latency_after_swap(&glc->latency);
 				glc->swapbuffer_cnt=0;
 			} else {
 				/* GH_glFinish(); */
 				GH_glFlush();
 			}
 		} else {
-			GH_GET_PTR(glXSwapBuffers);
+			latency_before_swap(&glc->latency);
 			GH_glXSwapBuffers(dpy, drawable);
+			latency_after_swap(&glc->latency);
 		}
 		frametimes_after_swap(&glc->frametimes);
 	} else {
@@ -1249,7 +1379,9 @@ static void* GH_get_interceptor(const char *name, GH_resolve_func query,
 #ifdef GH_SWAPBUFFERS_INTERCEPT
 	if (do_swapbuffers) {
 		if (do_swapbuffers < 0) {
-			do_swapbuffers= get_envi("GH_SWAPBUFFERS", 0) | get_envi("GH_FRAMETIME", 0);
+			do_swapbuffers =get_envi("GH_SWAPBUFFERS", 0) ||
+					get_envi("GH_FRAMETIME", 0) ||
+					(get_envi("GH_LATENCY", GH_LATENCY_NOP) != GH_LATENCY_NOP);
 		}
 		if (do_swapbuffers)
 			GH_INTERCEPT(glXSwapBuffers);
