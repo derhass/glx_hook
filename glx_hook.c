@@ -233,7 +233,7 @@ GH_get_gl_proc(const char *name)
 #define GH_GET_GL_PROC_OR_FAIL(func, level, fail_code) \
 	GH_GET_GL_PROC(func); \
 	if (GH_ ##func == NULL) { \
-		GH_verbose(level, "%s not available!", #func); \
+		GH_verbose(level, "%s not available!\n", #func); \
 		return fail_code; \
 	} \
 	(void)0
@@ -350,7 +350,7 @@ frametimes_init(GH_frametimes *ft, GH_frametime_mode mode, unsigned int delay, u
 
 	if (mode >= GH_FRAMETIME_CPU_GPU) {
 		if (frametimes_gl_init()) {
-			GH_verbose(GH_MSG_WARNING, "GPU timer queries not available, using CPU only");
+			GH_verbose(GH_MSG_WARNING, "GPU timer queries not available, using CPU only\n");
 			mode = GH_FRAMETIME_CPU;
 		}
 	}
@@ -363,20 +363,20 @@ frametimes_init(GH_frametimes *ft, GH_frametime_mode mode, unsigned int delay, u
 		if ((ft->frametime=malloc(sizeof(*ft->frametime) * (num_results+1) * num_timestamps))) {
 			if ((ft->timestamp=malloc(sizeof(*ft->timestamp) * delay * num_timestamps))) {
 				unsigned int i;
-				GH_verbose(GH_MSG_DEBUG, "enabling frametime measurements mode %d,  %u x %u timestamps",
+				GH_verbose(GH_MSG_DEBUG, "enabling frametime measurements mode %d,  %u x %u timestamps\n",
 						(int)mode, delay, num_timestamps);
 				for (i=0; i<delay * num_timestamps; i++) {
 					timestamp_init(&ft->timestamp[i]);
 				}
 			} else {
 				GH_verbose(GH_MSG_WARNING, "failed to allocate memory for %u x %u timestamps, "
-						"disbaling timestamps",
+						"disbaling timestamps\n",
 						delay, num_timestamps);
 				mode=GH_FRAMETIME_NONE;
 			}
 		} else {
 			GH_verbose(GH_MSG_WARNING, "failed to allocate memory for %u x %u frametime results, "
-					"disbaling timestamps",
+					"disbaling timestamps\n",
 					num_results, num_timestamps);
 			mode=GH_FRAMETIME_NONE;
 		}
@@ -460,7 +460,7 @@ frametimes_flush(GH_frametimes *ft)
 		return;
 	}
 
-	GH_verbose(GH_MSG_DEBUG, "frametimes: dumping results of %u frames", ft->cur_result);
+	GH_verbose(GH_MSG_DEBUG, "frametimes: dumping results of %u frames\n", ft->cur_result);
 	for (i=0; i<ft->cur_result; i++) {
 		cur=&ft->frametime[i * ft->num_timestamps];
 		frametimes_dump_results(ft, cur, prev);
