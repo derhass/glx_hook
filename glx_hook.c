@@ -12,6 +12,11 @@
 #include <GL/glx.h>
 #include <GL/glxext.h>
 
+#ifdef GH_CONTEXT_TRACKING
+#include <time.h>	/* for clock_gettime */
+#include <GL/glext.h>
+#endif
+
 /***************************************************************************
  * helpers                                                                 *
  ***************************************************************************/
@@ -24,6 +29,20 @@ get_envi(const char *name, int def)
 
 	if (s) {
 		i=(int)strtol(s,NULL,0);
+	} else {
+		i=def;
+	}
+	return i;
+}
+
+static unsigned int
+get_envui(const char *name, unsigned int def)
+{
+	const char *s=getenv(name);
+	int i;
+
+	if (s) {
+		i=(unsigned)strtoul(s,NULL,0);
 	} else {
 		i=def;
 	}
@@ -157,6 +176,13 @@ static Bool (* volatile GH_glXMakeCurrentReadSGI)(Display *, GLXDrawable, GLXDra
 static void (* volatile GH_glFlush)(void);
 static void (* volatile GH_glFinish)(void);
 
+/* OpenGL extension functions we might query */
+static PFNGLGENQUERIESPROC GH_glGenQueries=NULL;
+static PFNGLDELETEQUERIESPROC GH_glDeleteQueries=NULL;
+static PFNGLGETINTEGER64VPROC GH_glGetInteger64v=NULL;
+static PFNGLQUERYCOUNTERPROC GH_glQueryCounter=NULL;
+static PFNGLGETQUERYOBJECTUI64VPROC GH_glGetQueryObjectui64v=NULL;
+
 /* Resolve an unintercepted symbol via the original dlsym() */
 static void *GH_dlsym_next(const char *name)
 {
@@ -171,11 +197,348 @@ static void *GH_dlsym_next(const char *name)
 		GH_ ##func = GH_dlsym_next(#func);\
 	pthread_mutex_unlock(&GH_fptr_mutex)
 
+/* try to get an OpenGL function */
+static void *
+GH_get_gl_proc(const char *name)
+{
+	static void *proc;
+
+	/* try glXGetProcAddressARB first */
+	GH_GET_PTR(glXGetProcAddressARB);
+	if (GH_glXGetProcAddressARB && (proc=GH_glXGetProcAddressARB(name)) )
+		return proc;
+
+	/* try glXGetProcAddress as second chance */
+	GH_GET_PTR(glXGetProcAddress);
+	if (GH_glXGetProcAddress && (proc=GH_glXGetProcAddressARB(name)) )
+		return proc;
+
+	/* try dlsym as last resort */
+	return GH_dlsym_next(name);
+}
+
+#define GH_GET_GL_PROC(func) \
+	pthread_mutex_lock(&GH_fptr_mutex); \
+	if ( (GH_ ##func == NULL)) { \
+		void *ptr; \
+		pthread_mutex_unlock(&GH_fptr_mutex); \
+		ptr = GH_get_gl_proc(#func); \
+		GH_verbose(GH_MSG_DEBUG,"queried internal GL %s: %p\n", \
+			#func, ptr); \
+		pthread_mutex_lock(&GH_fptr_mutex); \
+		GH_ ##func = ptr; \
+	} \
+	pthread_mutex_unlock(&GH_fptr_mutex);
+
+#define GH_GET_GL_PROC_OR_FAIL(func, level, fail_code) \
+	GH_GET_GL_PROC(func); \
+	if (GH_ ##func == NULL) { \
+		GH_verbose(level, "%s not available!", #func); \
+		return fail_code; \
+	} \
+	(void)0
+
 /***************************************************************************
- * GL context tracking                                                     *
+ * FRAME TIMING MEASUREMENTS                                               *
  ***************************************************************************/
 
 #ifdef GH_CONTEXT_TRACKING
+
+/* we support different modes for the frame time measurements */
+typedef enum {
+	GH_FRAMETIME_NONE=0,	/* do not measure any frame times */
+	GH_FRAMETIME_CPU,	/* measure only on CPU */
+	GH_FRAMETIME_CPU_GPU,	/* measure both on CPU and GPU */
+} GH_frametime_mode;
+
+/* a single timestamp */
+typedef struct {
+	struct timespec timestamp_cpu;	/* CPU timestamp */
+	GLuint64 timestamp_gl;		/* OpenGL timestamp (client side) */
+	GLuint query_object;		/* the OpenGL timer query object */
+} GH_timestamp;
+
+/* the _result_ of the measurement */
+typedef struct {
+	uint64_t cpu;
+	uint64_t gl;
+	uint64_t gpu;
+} GH_frametime;
+
+/* the complete state needed for frametime measurements */
+typedef struct {
+	GH_frametime_mode mode;		/* the mode we are in */
+	unsigned int delay;		/* number of frames for delay */
+	unsigned int num_timestamps;	/* number of timestamps per frame */
+	unsigned int num_results;	/* number of frames to store results */
+	GH_timestamp *timestamp;	/* the array of timestamps, used as ring buffer */
+	unsigned int cur_pos;		/* the current frame in the delay ring buffer */
+	GH_frametime *frametime;	/* the array of frametimes */
+	unsigned int cur_result;	/* the current result index */
+	FILE *dump;			/* the stream to dump the results to */
+} GH_frametimes;
+
+/* the probes we take each frame */
+typedef enum {
+	GH_FRAMETIME_BEFORE_SWAPBUFFERS=0,
+	GH_FRAMETIME_AFTER_SWAPBUFFERS,
+	GH_FRAMETIME_COUNT
+} GH_frametime_probe;
+
+static void
+timestamp_init(GH_timestamp *ts)
+{
+	ts->query_object=0;
+	ts->timestamp_gl=0;
+	ts->timestamp_cpu.tv_sec=0;
+	ts->timestamp_cpu.tv_nsec=0;
+}
+
+static void
+timestamp_cleanup(GH_timestamp *ts)
+{
+	if (ts->query_object && GH_glDeleteQueries) {
+		GH_glDeleteQueries(1, &ts->query_object);
+		ts->query_object=0;
+	}
+}
+
+static void
+timestamp_set(GH_timestamp *ts, GH_frametime *rs, GH_frametime_mode mode)
+{
+	/* CPU */
+	/* collect previous result */
+	rs->cpu=(uint64_t)ts->timestamp_cpu.tv_sec * (uint64_t)1000000000UL
+		+ (uint64_t)ts->timestamp_cpu.tv_nsec;
+	/* new query */
+	clock_gettime(CLOCK_REALTIME, &ts->timestamp_cpu);
+
+	/* GPU */
+	if (mode >= GH_FRAMETIME_CPU_GPU) {
+		/* collect previous result */
+		if (ts->query_object) {
+			GLuint64 value;
+			GH_glGetQueryObjectui64v(ts->query_object, GL_QUERY_RESULT, &value);
+			rs->gpu=(uint64_t)value;
+		} else {
+			GH_glGenQueries(1, &ts->query_object);
+		}
+		rs->gl=(uint64_t)(ts->timestamp_gl);
+		/* new query */
+		GH_glQueryCounter(ts->query_object, GL_TIMESTAMP);
+		GH_glGetInteger64v(GL_TIMESTAMP, (GLint64*)&ts->timestamp_gl);
+	}
+}
+
+static int
+frametimes_gl_init()
+{
+	GH_GET_GL_PROC_OR_FAIL(glGenQueries, GH_MSG_WARNING, -1);
+	GH_GET_GL_PROC_OR_FAIL(glDeleteQueries, GH_MSG_WARNING, -1);
+	GH_GET_GL_PROC_OR_FAIL(glGetInteger64v, GH_MSG_WARNING, -1);
+	GH_GET_GL_PROC_OR_FAIL(glQueryCounter, GH_MSG_WARNING, -1);
+	GH_GET_GL_PROC_OR_FAIL(glGetQueryObjectui64v, GH_MSG_WARNING, -1);
+	return 0;
+}
+
+static void
+frametimes_init(GH_frametimes *ft, GH_frametime_mode mode, unsigned int delay, unsigned int num_timestamps, unsigned int num_results, unsigned int ctx_num)
+{
+	ft->cur_pos=0;
+	ft->cur_result=0;
+	ft->dump=NULL;
+
+	if (mode >= GH_FRAMETIME_CPU_GPU) {
+		if (frametimes_gl_init()) {
+			GH_verbose(GH_MSG_WARNING, "GPU timer queries not available, using CPU only");
+			mode = GH_FRAMETIME_CPU;
+		}
+	}
+
+	if (mode && delay && num_timestamps && num_results) {
+		ft->mode=mode;
+		ft->delay=delay;
+		ft->num_timestamps=num_timestamps;
+		ft->num_results=num_results;
+		if ((ft->frametime=malloc(sizeof(*ft->frametime) * (num_results+1) * num_timestamps))) {
+			if ((ft->timestamp=malloc(sizeof(*ft->timestamp) * delay * num_timestamps))) {
+				unsigned int i;
+				GH_verbose(GH_MSG_DEBUG, "enabling frametime measurements mode %d,  %u x %u timestamps",
+						(int)mode, delay, num_timestamps);
+				for (i=0; i<delay * num_timestamps; i++) {
+					timestamp_init(&ft->timestamp[i]);
+				}
+			} else {
+				GH_verbose(GH_MSG_WARNING, "failed to allocate memory for %u x %u timestamps, "
+						"disbaling timestamps",
+						delay, num_timestamps);
+				mode=GH_FRAMETIME_NONE;
+			}
+		} else {
+			GH_verbose(GH_MSG_WARNING, "failed to allocate memory for %u x %u frametime results, "
+					"disbaling timestamps",
+					num_results, num_timestamps);
+			mode=GH_FRAMETIME_NONE;
+		}
+	}
+
+	if (!mode || !delay || !num_timestamps || !num_results) {
+		ft->mode=GH_FRAMETIME_NONE;
+		ft->delay=0;
+		ft->num_timestamps=0;
+		ft->num_results=0;
+		ft->timestamp=NULL;
+		ft->frametime=NULL;
+	}
+
+	if (ft->mode) {
+		const char *file=getenv("GH_FRAMETIME_FILE");
+		if (!file) {
+			file="glx_hook_frametimes";
+		}
+		if (file) {
+			char buf[PATH_MAX];
+			snprintf(buf, sizeof(buf), "%s-ctx%u.csv", file, ctx_num);
+			ft->dump=fopen(buf,"wt");
+		}
+		if (!ft->dump) {
+			ft->dump=stderr;
+		}
+	}
+}
+
+static void
+frametimes_init_base(GH_frametimes *ft)
+{
+	/* get the base timestamp */
+	if (ft->mode > GH_FRAMETIME_NONE) {
+		GH_timestamp base;
+		unsigned int i;
+		GH_frametime *last=&ft->frametime[ft->num_results * ft->num_timestamps];
+
+		timestamp_init(&base);
+		timestamp_set(&base, &last[0], ft->mode);
+		timestamp_set(&base, &last[0], ft->mode);
+		for (i=1; i<ft->num_timestamps; i++) {
+			last[i]=last[0];
+		}
+		timestamp_cleanup(&base);
+	}
+}
+
+static void
+frametimes_dump_diff(const GH_frametimes *ft, uint64_t val, uint64_t base)
+{
+	fprintf(ft->dump, "\t%llu", (unsigned long long) (val-base));
+}
+
+static void
+frametimes_dump_result(const GH_frametimes *ft, const GH_frametime *rs, const GH_frametime *base)
+{
+	frametimes_dump_diff(ft, rs->cpu, base->cpu);
+	frametimes_dump_diff(ft, rs->gpu, base->gpu);
+	frametimes_dump_diff(ft, rs->gpu, rs->gl);
+}
+
+static void
+frametimes_dump_results(const GH_frametimes *ft, const GH_frametime *rs, const GH_frametime *prev)
+{
+	unsigned int i;
+	for (i=0; i<ft->num_timestamps; i++) {
+		frametimes_dump_result(ft, &rs[i], &prev[GH_FRAMETIME_AFTER_SWAPBUFFERS]);
+	}
+}
+
+static void
+frametimes_flush(GH_frametimes *ft)
+{
+	unsigned int i;
+	GH_frametime *last;
+	const GH_frametime *cur,*prev=&ft->frametime[ft->num_results * ft->num_timestamps];
+
+	if (ft->cur_result == 0) {
+		return;
+	}
+
+	GH_verbose(GH_MSG_DEBUG, "frametimes: dumping results of %u frames", ft->cur_result);
+	for (i=0; i<ft->cur_result; i++) {
+		cur=&ft->frametime[i * ft->num_timestamps];
+		frametimes_dump_results(ft, cur, prev);
+		prev=cur;
+		fputc('\n', ft->dump);
+	}
+	fflush(ft->dump);
+	/* copy the last result */
+	last=&ft->frametime[ft->num_results * ft->num_timestamps];
+	cur=&ft->frametime[(ft->cur_result-1) * ft->num_timestamps];
+	for (i=0; i<ft->num_timestamps; i++) {
+		last[i]=cur[i];
+	}
+
+
+	ft->cur_result=0;
+}
+
+static void
+frametimes_destroy(GH_frametimes *ft)
+{
+	if (ft) {
+		unsigned int cnt=ft->delay * ft->num_timestamps;
+		unsigned int i;
+
+		frametimes_flush(ft);
+		if (ft->dump != NULL && ft->dump != stdout && ft->dump != stderr) {
+			fclose(ft->dump);
+		}
+		for (i=0; i<cnt; i++) {
+			timestamp_cleanup(&ft->timestamp[i]);
+		}
+		free(ft->timestamp);
+		free(ft->frametime);
+	}
+}
+
+static void
+frametimes_before_swap(GH_frametimes *ft)
+{
+	unsigned int ts_idx;
+	unsigned int rs_idx;
+
+	if (ft->mode == GH_FRAMETIME_NONE)
+		return;
+	ts_idx=ft->cur_pos * ft->num_timestamps + GH_FRAMETIME_BEFORE_SWAPBUFFERS;
+	rs_idx=ft->cur_result * ft->num_timestamps + GH_FRAMETIME_BEFORE_SWAPBUFFERS;
+	timestamp_set(&ft->timestamp[ts_idx], &ft->frametime[rs_idx], ft->mode);
+}
+
+static void
+frametimes_finish_frame(GH_frametimes *ft)
+{
+	if (++ft->cur_pos == ft->delay) {
+		ft->cur_pos=0;
+	}
+	if (++ft->cur_result >= ft->num_results) {
+		frametimes_flush(ft);
+	}
+}
+
+static void
+frametimes_after_swap(GH_frametimes *ft)
+{
+	unsigned int ts_idx;
+	unsigned int rs_idx;
+
+	if (ft->mode == GH_FRAMETIME_NONE)
+		return;
+	ts_idx=ft->cur_pos * ft->num_timestamps + GH_FRAMETIME_AFTER_SWAPBUFFERS;
+	rs_idx=ft->cur_result * ft->num_timestamps + GH_FRAMETIME_AFTER_SWAPBUFFERS;
+	timestamp_set(&ft->timestamp[ts_idx], &ft->frametime[rs_idx], ft->mode);
+	frametimes_finish_frame(ft);
+}
+
+/***************************************************************************
+ * GL context tracking                                                     *
+ ***************************************************************************/
 
 typedef struct gl_context_s {
 	GLXContext ctx;
@@ -184,14 +547,17 @@ typedef struct gl_context_s {
 	unsigned int flags;
 	int swapbuffers;
 	int swapbuffer_cnt;
+	unsigned int num;
 	struct gl_context_s *next;
+	GH_frametimes frametimes;
 } gl_context_t;
 
 /* flag bits */
 #define GH_GL_CURRENT		0x1
+#define GH_GL_NEVER_CURRENT	0x2
 
 static gl_context_t * volatile ctx_list=NULL;
-static volatile int ctx_firsttime=1;
+static volatile int ctx_counter=0;
 static pthread_mutex_t ctx_mutex=PTHREAD_MUTEX_INITIALIZER;
 static pthread_key_t ctx_current;
 
@@ -205,7 +571,7 @@ add_ctx(gl_context_t *glc)
 }
 
 static gl_context_t *
-create_ctx(GLXContext ctx)
+create_ctx(GLXContext ctx, unsigned int num)
 {
 	gl_context_t *glc;
 
@@ -216,7 +582,10 @@ create_ctx(GLXContext ctx)
 		glc->read=None;
 		glc->swapbuffers=0;
 		glc->swapbuffer_cnt=0;
-		glc->flags=0;
+		glc->flags=GH_GL_NEVER_CURRENT;
+		glc->num=num;
+
+		frametimes_init(&glc->frametimes, GH_FRAMETIME_NONE, 0, 0, 0, num);
 	}
 	return glc;
 }
@@ -224,7 +593,10 @@ create_ctx(GLXContext ctx)
 static void
 destroy_ctx(gl_context_t *glc)
 {
-	free(glc);
+	if (glc) {
+		frametimes_destroy(&glc->frametimes);
+		free(glc);
+	}
 }
 
 static gl_context_t *
@@ -266,19 +638,20 @@ remove_ctx(GLXContext ctx)
 static void
 read_config(gl_context_t *glc)
 {
-	glc->swapbuffers=get_envi("GH_SWAPBUFFERS",-1);
+	glc->swapbuffers=get_envi("GH_SWAPBUFFERS",0);
 }
 
 static void
 create_context(GLXContext ctx)
 {
 	gl_context_t *glc;
+	unsigned int ctx_num;
 
 	GH_verbose(GH_MSG_DEBUG, "created ctx %p\n",ctx);
 
 	pthread_mutex_lock(&ctx_mutex);
-	if (ctx_firsttime) {
-		ctx_firsttime=0;
+	ctx_num=ctx_counter++;
+	if (!ctx_num) {
 		pthread_key_create(&ctx_current, NULL);
 		pthread_setspecific(ctx_current, NULL);
 		/* query the function pointers for the standad function
@@ -292,7 +665,7 @@ create_context(GLXContext ctx)
 	}
 	pthread_mutex_unlock(&ctx_mutex);
 	
-	glc=create_ctx(ctx);
+	glc=create_ctx(ctx, ctx_num);
 	if (glc) {
 		read_config(glc);
 		/* add to our list */
@@ -332,6 +705,16 @@ make_current(GLXContext ctx, GLXDrawable draw, GLXDrawable read)
 			glc->read=read;
 			glc->flags |= GH_GL_CURRENT;
 			GH_verbose(GH_MSG_DEBUG, "made current context %p\n",ctx);
+			if (glc->flags & GH_GL_NEVER_CURRENT) {
+				unsigned int ft_delay=get_envui("GH_FRAMETIME_DELAY", 3);
+				unsigned int ft_frames=get_envui("GH_FRAMETIME_FRAMES", 1000);
+				GH_frametime_mode ft_mode=(GH_frametime_mode)get_envi("GH_FRAMETIME", (int)GH_FRAMETIME_NONE);
+				/* made current for the first time */
+				glc->flags &= ~ GH_GL_NEVER_CURRENT;
+
+				frametimes_init(&glc->frametimes, ft_mode, ft_delay, GH_FRAMETIME_COUNT, ft_frames, glc->num);
+				frametimes_init_base(&glc->frametimes);
+			}
 		}
 	} else {
 		glc=NULL;
@@ -780,7 +1163,8 @@ extern void glXSwapBuffers(Display *dpy, GLXDrawable drawable)
 	gl_context_t *glc=(gl_context_t*)pthread_getspecific(ctx_current);
 
 	if (glc) {
-		if (glc->swapbuffers >= 0) {
+		frametimes_before_swap(&glc->frametimes);
+		if (glc->swapbuffers > 0) {
 			if (++glc->swapbuffer_cnt==glc->swapbuffers) {
 				GH_glXSwapBuffers(dpy, drawable);
 				glc->swapbuffer_cnt=0;
@@ -792,6 +1176,7 @@ extern void glXSwapBuffers(Display *dpy, GLXDrawable drawable)
 			GH_GET_PTR(glXSwapBuffers);
 			GH_glXSwapBuffers(dpy, drawable);
 		}
+		frametimes_after_swap(&glc->frametimes);
 	} else {
 		GH_verbose(GH_MSG_WARNING,"SwapBuffers called without a context\n");
 		GH_GET_PTR(glXSwapBuffers);
@@ -856,8 +1241,9 @@ static void* GH_get_interceptor(const char *name, GH_resolve_func query,
 #endif
 #ifdef GH_SWAPBUFFERS_INTERCEPT
 	if (do_swapbuffers) {
-		if (do_swapbuffers < 0)
-			do_swapbuffers=get_envi("GH_SWAPBUFFERS", 0);
+		if (do_swapbuffers < 0) {
+			do_swapbuffers= get_envi("GH_SWAPBUFFERS", 0) | get_envi("GH_FRAMETIME", 0);
+		}
 		if (do_swapbuffers)
 			GH_INTERCEPT(glXSwapBuffers);
 	}

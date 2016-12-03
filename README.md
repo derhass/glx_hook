@@ -73,6 +73,36 @@ the rendering, and you want vsync on but stilll a higher frequency for the loop.
 Currently, there is no adaptive mode, so you need to have $n times the framerate
 to not miss any display frames.
 
+Set GH_FRAMETIME=$mode to aquire frame timings.The following modes are
+supported:
+* 0: no frametime measurements (the default)
+* 1: measure frametime on CPU only
+* 2: measure frametimes on CPU and GPU
+
+Use GH_FRAMETIME_DELAY=$n to set the delay for the timer queries (default: 3 frames).
+This controls the number of frames the GPU might stay ahead of the CPU. Setting a
+too low number may result in performance degradation in comparison to not measure
+the frametimes.
+
+Use GH_FRAMETIME_FRAMES=$n to control the number of frames which are buffered
+internally (default: 1000 frames). The results will be dumped to disk if the buffer is full. Setting
+a too low value here might result in performance degradation due to the output.
+
+Use GH_FRAMETIME_FILE=$name to control the output file name (default:
+`glx_hook_frametimes`). The string `-ctx$num.csv` will automatically be appended,
+where $num is the number of the GL context. The output will be one line per frame,
+with the following values:
+
+    CPU GPU latency CPU GPU latency
+
+where `CPU` denotes timestamps on the CPU, `GPU` denotes timestamps on the GPU
+and `latency` denotes the latency of the GPU. All values are in nanoseconds.
+The  first three values refer to the time directly before the buffer swap,
+the latter to directly after the swap. The `CPU` and `GPU` values are always
+relative to the buffer swap of the _previous_ frame, and `latency` is just
+the observed latency at the respective timing probe. The first `GH_FRAMETIME_DELAY+1`
+lines of the file are useless.
+
 ### INSTALLATION:
 
 This requires glibc, as we call some internal glibc functions not intended to

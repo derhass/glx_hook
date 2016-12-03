@@ -13,9 +13,9 @@ BAREDEFINES=
 all: glx_hook.so glx_hook_bare.so
 
 glx_hook.so: glx_hook.c
-	$(CC) $(CPPFLAGS) $(STDDEFINES) $(CFLAGS) $(LDFLAGS) -shared -fPIC -Bsymbolic -pthread -o $@ $<
+	$(CC)  -shared -fPIC -Bsymbolic -pthread -o $@ $< $(CPPFLAGS) $(STDDEFINES) $(CFLAGS) $(LDFLAGS) -lrt
 glx_hook_bare.so: glx_hook.c
-	$(CC) $(CPPFLAGS) $(BAREDEFINES) $(CFLAGS) $(LDFLAGS) -shared -fPIC -Bsymbolic -pthread -o $@ $<
+	$(CC)  -shared -fPIC -Bsymbolic -pthread -o $@ $< $(CPPFLAGS) $(STDDEFINES) $(CFLAGS) $(LDFLAGS)
 
 .PHONY: clean
 clean: 
