@@ -266,7 +266,7 @@ remove_ctx(GLXContext ctx)
 static void
 read_config(gl_context_t *glc)
 {
-	glc->swapbuffers=get_envi("GH_SWAPBUFFERS",0);
+	glc->swapbuffers=get_envi("GH_SWAPBUFFERS",-1);
 }
 
 static void
@@ -780,12 +780,17 @@ extern void glXSwapBuffers(Display *dpy, GLXDrawable drawable)
 	gl_context_t *glc=(gl_context_t*)pthread_getspecific(ctx_current);
 
 	if (glc) {
-		if (++glc->swapbuffer_cnt==glc->swapbuffers) {
-			GH_glXSwapBuffers(dpy, drawable);
-			glc->swapbuffer_cnt=0;
+		if (glc->swapbuffers >= 0) {
+			if (++glc->swapbuffer_cnt==glc->swapbuffers) {
+				GH_glXSwapBuffers(dpy, drawable);
+				glc->swapbuffer_cnt=0;
+			} else {
+				/* GH_glFinish(); */
+				GH_glFlush();
+			}
 		} else {
-			/* GH_glFinish(); */
-			GH_glFlush();
+			GH_GET_PTR(glXSwapBuffers);
+			GH_glXSwapBuffers(dpy, drawable);
 		}
 	} else {
 		GH_verbose(GH_MSG_WARNING,"SwapBuffers called without a context\n");
