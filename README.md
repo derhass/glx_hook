@@ -33,9 +33,11 @@ where `$mode` controls how the values are exchanged. Valid modes are
 * `min=$x`: set interval to at least `$x`
 * `max=$x`: set interval to at most `$x`
 
-NOTE: This tool currently only changes values forwarded to the swap interval
+NOTE: This option only changes values forwarded to the swap interval
 functions, or ignores these calls completely, but never adds new calls
-to set the swap interval. If the app doesn't do it, this tool does nothing.
+to set the swap interval. If the app doesn't do it, this option does nothing.
+For actually injection such calls, have a look at the experimental option
+`GH_INJECT_SWAPINTERVAL` below.
 
 NVidia is promoting a feature called "adaptive vsync" where a "late" buffer
 swap is done immediately instead of beeing delayed to the next sync interval.
@@ -71,6 +73,13 @@ with the bare minimum of `glX` (and `dlsym`) functions.
 ### EXPERIMENTAL FEATURES:
 
 The following features are only available in `glx_hook.so` (and not `glx_hook_bare.so`):
+
+Set `GH_INJECT_SWAPINTERVAL=$n` to inject a `SwapInterval` call when a context
+is made current for the first time. By default, this is disabled. The `GH_SWAP_MODE`
+setting does not affect the operation of this option. This option is most
+useful if the application never sets a swap interval, but it might be combined
+with the other `GH_SWAP_MODE` settings, i.e. `GH_SWAP_MODE=ignore` to prevent
+the app from changing th injected setting later on.
 
 Set `GH_SWAPBUFFERS=$n` to only execute every `$n`-th buffer swap. This might be
 useful for games where all game logic is implemented in the same loop as

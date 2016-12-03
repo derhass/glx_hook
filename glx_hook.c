@@ -17,6 +17,13 @@
 #include <GL/glext.h>
 #endif
 
+/* we use this value as swap interval to mark the situation that we should
+ * not set the swap interval at all. Note that with
+ * GLX_EXT_swap_control_tear, negative intervals are allowed, and the
+ * absolute value specifies the real interval, so we use just INT_MIN to
+ * avoid conflicts with values an application might set. */
+#define GH_SWAP_DONT_SET	INT_MIN
+
 /***************************************************************************
  * helpers                                                                 *
  ***************************************************************************/
@@ -676,6 +683,7 @@ typedef struct gl_context_s {
 	unsigned int flags;
 	int swapbuffers;
 	int swapbuffer_cnt;
+	int inject_swapinterval;
 	unsigned int num;
 	struct gl_context_s *next;
 	GH_frametimes frametimes;
@@ -712,6 +720,7 @@ create_ctx(GLXContext ctx, unsigned int num)
 		glc->read=None;
 		glc->swapbuffers=0;
 		glc->swapbuffer_cnt=0;
+		glc->inject_swapinterval=GH_SWAP_DONT_SET;
 		glc->flags=GH_GL_NEVER_CURRENT;
 		glc->num=num;
 
@@ -771,6 +780,7 @@ static void
 read_config(gl_context_t *glc)
 {
 	glc->swapbuffers=get_envi("GH_SWAPBUFFERS",0);
+	glc->inject_swapinterval=get_envi("GH_INJECT_SWAPINTERVAL", GH_SWAP_DONT_SET);
 }
 
 static void
@@ -816,7 +826,7 @@ destroy_context(GLXContext ctx)
 }
 
 static void
-make_current(GLXContext ctx, GLXDrawable draw, GLXDrawable read)
+make_current(GLXContext ctx, Display *dpy, GLXDrawable draw, GLXDrawable read)
 {
 	gl_context_t *glc;
 
@@ -848,6 +858,21 @@ make_current(GLXContext ctx, GLXDrawable draw, GLXDrawable read)
 				frametimes_init(&glc->frametimes, ft_mode, ft_delay, GH_FRAMETIME_COUNT, ft_frames, glc->num);
 				frametimes_init_base(&glc->frametimes);
 				latency_init(&glc->latency, latency);
+				if (glc->inject_swapinterval != GH_SWAP_DONT_SET) {
+					GH_GET_PTR(glXSwapIntervalEXT);
+					if (GH_glXSwapIntervalEXT) {
+						GH_verbose(GH_MSG_INFO, "injecting swap interval: %d\n",
+								glc->inject_swapinterval);
+						GH_glXSwapIntervalEXT(dpy, glc->draw, glc->inject_swapinterval);
+					} else {
+						GH_GET_PTR(glXSwapIntervalSGI);
+						if (GH_glXSwapIntervalEXT) {
+							GH_verbose(GH_MSG_INFO, "injecting swap interval: %d\n",
+									glc->inject_swapinterval);
+							GH_glXSwapIntervalSGI(glc->inject_swapinterval);
+						}
+					}
+				}
 			}
 		}
 	} else {
@@ -862,13 +887,6 @@ make_current(GLXContext ctx, GLXDrawable draw, GLXDrawable read)
 /***************************************************************************
  * SWAP INTERVAL LOGIC                                                     *
  ***************************************************************************/
-
-/* we use this value as swap interval to mark the situation that we should
- * not set the swap interval at all. Note that with 
- * GLX_EXT_swap_control_tear, negative intervals are allowed, and the 
- * absolute value specifies the real interval, so we use just INT_MIN to 
- * avoid conflicts with values an application might set. */
-#define GH_SWAP_DONT_SET	INT_MIN
 
 /* possible GH_SWAP_MODEs */
 typedef enum {
@@ -1228,7 +1246,7 @@ extern Bool glXMakeCurrent(Display *dpy, GLXDrawable drawable, GLXContext ctx)
 	Bool result;
 
 	result=GH_glXMakeCurrent(dpy, drawable, ctx);
-	make_current(ctx, drawable, drawable);
+	make_current(ctx, dpy, drawable, drawable);
 	return result;
 }
 
@@ -1237,7 +1255,7 @@ extern Bool glXMakeContextCurrent(Display *dpy, GLXDrawable draw, GLXDrawable re
 	Bool result;
 
 	result=GH_glXMakeContextCurrent(dpy, draw, read, ctx);
-	make_current(ctx, draw, read);
+	make_current(ctx, dpy, draw, read);
 	return result;
 }
 
@@ -1246,7 +1264,7 @@ extern Bool glXMakeCurrentReadSGI(Display *dpy, GLXDrawable draw, GLXDrawable re
 	Bool result;
 
 	result=GH_glXMakeCurrentReadSGI(dpy, draw, read, ctx);
-	make_current(ctx, draw, read);
+	make_current(ctx, dpy, draw, read);
 	return result;
 }
 
