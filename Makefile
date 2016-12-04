@@ -19,5 +19,5 @@ glx_hook_bare.so: glx_hook.c
 
 .PHONY: clean
 clean: 
-	-rm glx_hook.so
+	-rm glx_hook.so glx_hook_bare.so
 
