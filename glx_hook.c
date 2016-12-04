@@ -848,7 +848,7 @@ make_current(GLXContext ctx, Display *dpy, GLXDrawable draw, GLXDrawable read)
 			glc->flags |= GH_GL_CURRENT;
 			GH_verbose(GH_MSG_DEBUG, "made current context %p\n",ctx);
 			if (glc->flags & GH_GL_NEVER_CURRENT) {
-				unsigned int ft_delay=get_envui("GH_FRAMETIME_DELAY", 3);
+				unsigned int ft_delay=get_envui("GH_FRAMETIME_DELAY", 10);
 				unsigned int ft_frames=get_envui("GH_FRAMETIME_FRAMES", 1000);
 				GH_frametime_mode ft_mode=(GH_frametime_mode)get_envi("GH_FRAMETIME", (int)GH_FRAMETIME_NONE);
 				int latency=get_envi("GH_LATENCY", GH_LATENCY_NOP);

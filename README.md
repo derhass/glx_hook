@@ -101,7 +101,7 @@ supported:
 [`GL_ARB_timer_query`](https://www.opengl.org/registry/specs/ARB/timer_query.txt)
 extension)
 
-Use `GH_FRAMETIME_DELAY=$n` to set the delay for the timer queries (default: 3 frames).
+Use `GH_FRAMETIME_DELAY=$n` to set the delay for the timer queries (default: 10 frames).
 This controls the number of frames the GPU might stay ahead of the CPU. Setting a
 too low number may result in performance degradation in comparison to not measure
 the frametimes.
