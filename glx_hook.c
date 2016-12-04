@@ -1297,10 +1297,22 @@ extern int glXSwapIntervalSGI(int interval)
 
 extern int glXSwapIntervalMESA(unsigned int interval)
 {
-	interval=GH_swap_interval((int)interval);
-	if (interval == GH_SWAP_DONT_SET) {
+	int signed_interval;
+	if (interval > (unsigned)INT_MAX) {
+		signed_interval=INT_MAX;
+	} else {
+		signed_interval=(int)interval;
+	}
+	signed_interval=GH_swap_interval(signed_interval);
+	if (signed_interval == GH_SWAP_DONT_SET) {
 		/* ignore the call */
 		return 0; /* success */
+	}
+	if (signed_interval < 0) {
+		GH_verbose(GH_MSG_WARNING,"glXSwapIntervalMESA does not support negative swap intervals\n");
+		interval=(unsigned)(-signed_interval);
+	} else {
+		interval=(unsigned)signed_interval;
 	}
 	GH_GET_PTR(glXSwapIntervalMESA);
 	return GH_glXSwapIntervalMESA(interval);
