@@ -46,7 +46,7 @@ For actually injection such calls, have a look at the experimental option
 [`GH_INJECT_SWAPINTERVAL`](#swap-interval-injection) below.
 
 NVidia is promoting a feature called "adaptive vsync" where a "late" buffer
-swap is done immediately instead of beeing delayed to the next sync interval.
+swap is done immediately instead of being delayed to the next sync interval.
 This feature is exposed via the
 [`GLX_EXT_swap_control_tear`](https://www.opengl.org/registry/specs/EXT/glx_swap_control_tear.txt)
 extension. If this
@@ -102,9 +102,12 @@ supported:
 extension)
 
 Use `GH_FRAMETIME_DELAY=$n` to set the delay for the timer queries (default: 10 frames).
-This controls the number of frames the GPU might stay ahead of the CPU. Setting a
-too low number may result in performance degradation in comparison to not measure
-the frametimes.
+This controls the number of frames the GPU might lag behind of the CPU. Setting a
+too low number may result in performance degradation in comparison to not measuring
+the frametimes. The implicit synchronizations can have a similar effect as the
+[`GH_LATENCY`](#latency-limiter) setting, albeit only as an unintented side-effect,
+and might completely invalidate the measurements. Just leave this value
+at the default unless you know exactly what you are doing...
 
 Use `GH_FRAMETIME_FRAMES=$n` to control the number of frames which are buffered
 internally (default: 1000 frames). The results will be dumped to disk if the buffer is full. Setting
