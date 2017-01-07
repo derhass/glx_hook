@@ -17,7 +17,7 @@ all: glx_hook.so glx_hook_bare.so
 glx_hook.so: glx_hook.c Makefile
 	$(CC)  -shared -fPIC -Bsymbolic -pthread -o $@ $< $(CPPFLAGS) $(STDDEFINES) $(CFLAGS) $(LDFLAGS) -lrt
 glx_hook_bare.so: glx_hook.c Makefile
-	$(CC)  -shared -fPIC -Bsymbolic -pthread -o $@ $< $(CPPFLAGS) $(STDDEFINES) $(CFLAGS) $(LDFLAGS)
+	$(CC)  -shared -fPIC -Bsymbolic -pthread -o $@ $< $(CPPFLAGS) $(BAREDEFINES) $(CFLAGS) $(LDFLAGS)
 
 .PHONY: clean
 clean: 
