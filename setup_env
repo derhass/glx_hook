@@ -1,0 +1,29 @@
+# NOTE: this MUST be sourced in the current shell to have any effect.
+# The problem here is: we cannot determine the path of the script by
+# itself, since in the sourced case, $0 is the path to the shell the
+# user is running. So the user must specify the path for us. As a
+# simplification when no parameter is given, the current working dir
+# is used.
+
+DIR="`pwd`"
+
+while [[ "x$1x" != "xx" ]]; do
+	DIR="$1"
+	shift
+done
+
+
+# check if this directory seems right: it should contain the glx_hook.so
+
+if [ -r "$DIR"/glx_hook.so ]; then
+	echo using "$DIR"
+	export LD_PRELOAD="$DIR/glx_hook.so":"$LD_PRELOAD"
+	# settings to use
+	export GH_SWAP_MODE=force=1 
+	export GH_LATENCY=1
+else	
+	echo "$DIR" seems not to be the right place
+	echo 'please use: source $PATH_GLX_HOOK/setup_env $PATH_TO_GLX_HOOK'
+	echo '        or: cd $PATH_TO_GLX_HOOK && source ./setup_env'
+fi
+
