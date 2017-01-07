@@ -42,6 +42,8 @@ get_envi(const char *name, int def)
 	return i;
 }
 
+#ifdef GH_CONTEXT_TRACKING
+
 static unsigned int
 get_envui(const char *name, unsigned int def)
 {
@@ -55,6 +57,8 @@ get_envui(const char *name, unsigned int def)
 	}
 	return i;
 }
+
+#endif
 
 /***************************************************************************
  * MESSAGE OUTPUT                                                          *
@@ -183,6 +187,7 @@ static Bool (* volatile GH_glXMakeCurrentReadSGI)(Display *, GLXDrawable, GLXDra
 static void (* volatile GH_glFlush)(void);
 static void (* volatile GH_glFinish)(void);
 
+#ifdef GH_CONTEXT_TRACKING
 /* OpenGL extension functions we might query */
 static PFNGLGENQUERIESPROC GH_glGenQueries=NULL;
 static PFNGLDELETEQUERIESPROC GH_glDeleteQueries=NULL;
@@ -192,6 +197,7 @@ static PFNGLGETQUERYOBJECTUI64VPROC GH_glGetQueryObjectui64v=NULL;
 static PFNGLFENCESYNCPROC GH_glFenceSync=NULL;
 static PFNGLDELETESYNCPROC GH_glDeleteSync=NULL;
 static PFNGLCLIENTWAITSYNCPROC GH_glClientWaitSync=NULL;
+#endif /* GH_CONTEXT_TRACKING */
 
 /* Resolve an unintercepted symbol via the original dlsym() */
 static void *GH_dlsym_next(const char *name)
@@ -206,6 +212,8 @@ static void *GH_dlsym_next(const char *name)
 	if(GH_ ##func == NULL) \
 		GH_ ##func = GH_dlsym_next(#func);\
 	pthread_mutex_unlock(&GH_fptr_mutex)
+
+#ifdef GH_CONTEXT_TRACKING
 
 /* try to get an OpenGL function */
 static void *
@@ -247,8 +255,6 @@ GH_get_gl_proc(const char *name)
 		return fail_code; \
 	} \
 	(void)0
-
-#ifdef GH_CONTEXT_TRACKING
 
 /***************************************************************************
  * LATENCY LIMITER                                                         *
