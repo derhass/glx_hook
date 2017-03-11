@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include <dlfcn.h>	/* for RTLD_NEXT */
 #include <pthread.h>	/* for mutextes */
+#include <unistd.h>	/* for usleep(3) */
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -274,6 +275,7 @@ typedef struct {
 	GLsync *sync_object;
 	unsigned int cur_pos;
 	GLuint64 wait_timeout;
+	useconds_t wait_interval;
 } GH_latency;
 
 static int
@@ -286,12 +288,18 @@ latency_gl_init()
 }
 
 static void
-latency_init(GH_latency *lat, int latency)
+latency_init(GH_latency *lat, int latency, unsigned int wait_interval)
 {
 	lat->latency=latency;
 	lat->sync_object=NULL;
 	lat->cur_pos=0;
 	lat->wait_timeout=1*1000000000; /* 1 second */
+	lat->wait_interval=(useconds_t)wait_interval;
+
+	if (latency != GH_LATENCY_NOP) {
+		GH_verbose(GH_MSG_INFO, "setting up latency limiter mode %d with  wait_interval %uusecs\n",
+				latency, wait_interval);
+	}
 
 	if (latency > 0) {
 		if (latency_gl_init()) {
@@ -347,8 +355,16 @@ latency_before_swap(GH_latency *lat)
 			break;
 		default:
 			if ( (sync=lat->sync_object[lat->cur_pos]) ) {
-				GH_glClientWaitSync(sync, GL_SYNC_FLUSH_COMMANDS_BIT, lat->wait_timeout);
-				/* NOTE: we do not care about the result */
+				if (lat->wait_interval) {
+					/* check for the fence in a loop */
+					while(GH_glClientWaitSync(sync, GL_SYNC_FLUSH_COMMANDS_BIT, 0) == GL_TIMEOUT_EXPIRED) {
+						usleep(lat->wait_interval);
+					}
+				} else {
+					/* just wait for the fence */
+					GH_glClientWaitSync(sync, GL_SYNC_FLUSH_COMMANDS_BIT, lat->wait_timeout);
+					/* NOTE: we do not care about the result */
+				}
 			}
 	}
 }
@@ -731,7 +747,7 @@ create_ctx(GLXContext ctx, unsigned int num)
 		glc->num=num;
 
 		frametimes_init(&glc->frametimes, GH_FRAMETIME_NONE, 0, 0, 0, num);
-		latency_init(&glc->latency, GH_LATENCY_NOP);
+		latency_init(&glc->latency, GH_LATENCY_NOP, 0);
 	}
 	return glc;
 }
@@ -858,12 +874,13 @@ make_current(GLXContext ctx, Display *dpy, GLXDrawable draw, GLXDrawable read)
 				unsigned int ft_frames=get_envui("GH_FRAMETIME_FRAMES", 1000);
 				GH_frametime_mode ft_mode=(GH_frametime_mode)get_envi("GH_FRAMETIME", (int)GH_FRAMETIME_NONE);
 				int latency=get_envi("GH_LATENCY", GH_LATENCY_NOP);
+				unsigned int latency_wait_interval=get_envui("GH_LATENCY_WAIT_USECS", 0);
 				/* made current for the first time */
 				glc->flags &= ~ GH_GL_NEVER_CURRENT;
 
 				frametimes_init(&glc->frametimes, ft_mode, ft_delay, GH_FRAMETIME_COUNT, ft_frames, glc->num);
 				frametimes_init_base(&glc->frametimes);
-				latency_init(&glc->latency, latency);
+				latency_init(&glc->latency, latency, latency_wait_interval);
 				if (glc->inject_swapinterval != GH_SWAP_DONT_SET) {
 					GH_GET_PTR(glXSwapIntervalEXT);
 					if (GH_glXSwapIntervalEXT) {

@@ -150,6 +150,14 @@ extension)
 This can be helpful in situations where you experience stuttering in a GL application. Preferably,
 you should use `GH_LATENCY=1` to not degrade performance too much.
 
+Some GL drivers may use busy waiting when waiting for the sync objects, resulting
+in maxing out one CPU core for nothing. If this is an issue, you can try setting
+`GH_LATENCY_WAIT_USECS` to some value > 0. This will disbale waiting for the
+completion of the sync object directly and instead use a loop to query the
+completion status, and add a sleep cycle for that many microseconds wheever the
+sync object was found not completed. Useful values should be in the range
+of 100 to 2000 usecs, but even setting it to 1 may have some effect.
+
 #### Buffer Swap Omission
 
 Set `GH_SWAPBUFFERS=$n` to only execute every `$n`-th buffer swap. This might be
@@ -167,7 +175,7 @@ be called. Tested with glibc-2.13 (from debian wheezy) and glibc-2.24
     $ make
 
 (assuming you have a C compiler and the standard libs installed).
-Finally copy the glx_hook.so to where you like it. For a debug build, do
+Finally copy the `glx_hook.so` to where you like it. For a debug build, do
 
     $ make DEBUG=1
 
