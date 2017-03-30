@@ -166,6 +166,12 @@ the rendering, and you want vsync on but stilll a higher frequency for the loop.
 Currently, there is no adaptive mode, so you need to have`$n` times the framerate
 to not miss any display frames.
 
+#### Sleep injection
+
+Set `GH_SWAP_SLEEP_USECS=$n` to force an addition sleep of that many microseconds
+after each buffer swap. This might if you want to reduce the framerate or simulate
+a slower machine.
+
 ### INSTALLATION:
 
 This requires glibc, as we call some internal glibc functions not intended to

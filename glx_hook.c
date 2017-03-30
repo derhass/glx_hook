@@ -710,6 +710,7 @@ typedef struct gl_context_s {
 	struct gl_context_s *next;
 	GH_frametimes frametimes;
 	GH_latency latency;
+	useconds_t swap_sleep_usecs;
 } gl_context_t;
 
 /* flag bits */
@@ -746,6 +747,7 @@ create_ctx(GLXContext ctx, unsigned int num)
 		glc->flags=GH_GL_NEVER_CURRENT;
 		glc->num=num;
 
+		glc->swap_sleep_usecs=0;
 		frametimes_init(&glc->frametimes, GH_FRAMETIME_NONE, 0, 0, 0, num);
 		latency_init(&glc->latency, GH_LATENCY_NOP, 0);
 	}
@@ -878,6 +880,7 @@ make_current(GLXContext ctx, Display *dpy, GLXDrawable draw, GLXDrawable read)
 				/* made current for the first time */
 				glc->flags &= ~ GH_GL_NEVER_CURRENT;
 
+				glc->swap_sleep_usecs=(useconds_t)get_envui("GH_SWAP_SLEEP_USECS",0);
 				frametimes_init(&glc->frametimes, ft_mode, ft_delay, GH_FRAMETIME_COUNT, ft_frames, glc->num);
 				frametimes_init_base(&glc->frametimes);
 				latency_init(&glc->latency, latency, latency_wait_interval);
@@ -1367,6 +1370,9 @@ extern void glXSwapBuffers(Display *dpy, GLXDrawable drawable)
 			latency_after_swap(&glc->latency);
 		}
 		frametimes_after_swap(&glc->frametimes);
+		if (glc->swap_sleep_usecs) {
+			usleep(glc->swap_sleep_usecs);
+		}
 	} else {
 		GH_verbose(GH_MSG_WARNING,"SwapBuffers called without a context\n");
 		GH_GET_PTR(glXSwapBuffers);
@@ -1434,6 +1440,7 @@ static void* GH_get_interceptor(const char *name, GH_resolve_func query,
 		if (do_swapbuffers < 0) {
 			do_swapbuffers =get_envi("GH_SWAPBUFFERS", 0) ||
 					get_envi("GH_FRAMETIME", 0) ||
+					get_envi("GH_SWAP_SLEEP_USECS", 0) ||
 					(get_envi("GH_LATENCY", GH_LATENCY_NOP) != GH_LATENCY_NOP);
 		}
 		if (do_swapbuffers)
