@@ -190,11 +190,12 @@ complex situations (i.e. the application is using several processes).
 A sequence of `%` followed by another character is treated depending
 on the second character as follows:
 
-* 'c': the GL context number (sequetially counted from 0), (this is not
+* `c`: the GL context number (sequetially counted from 0), (this is not
 		available for the `GH_VERBOSE_FILE` output, context number is
 		always 0 there)
-* 'p': the PID of the process
-* 't': the current timestamp as `<seconds_since_epoch>.<nanoseconds>'
+* `p`: the PID of the process
+* `t`: the current timestamp as `<seconds_since_epoch>.<nanoseconds>`
+* `%`: the `%` sign itself
 
 ### INSTALLATION:
 
