@@ -69,7 +69,8 @@ likely, the application won't care and no swap interval will be set.
 Further environment variables controlling the behavior:
 * `GH_VERBOSE=$level`: control level of verbosity (0 to 5)
 * `GH_VERBOSE_FILE=$file`: redirect verbose output to `$file` (default is to use
-			   standard error stream)
+			   standard error stream), see section [File Names](#file-names)
+			   for details about how the file name is parsed
 
 The `glx_hook.so` version is the full version which tracks GL contexts, and
 allows also for `glXSwapBuffers` manipulations (see below). However, the GL
@@ -122,8 +123,9 @@ internally (default: 1000 frames). The results will be dumped to disk if the buf
 a too low value here might result in performance degradation due to the output.
 
 Use `GH_FRAMETIME_FILE=$name` to control the output file name (default:
-`glx_hook_frametimes`). The string `-ctx$num.csv` will automatically be appended,
-where `$num` is the number of the GL context. The output will be one line per frame,
+`glx_hook_frametimes-ctx%c.csv`). See section [File Names](#file-names)
+for details about how the file name is parsed.
+The output will be one line per frame,
 with the following values:
 
     frame_number CPU GPU latency CPU GPU latency
@@ -179,6 +181,20 @@ to not miss any display frames.
 Set `GH_SWAP_SLEEP_USECS=$n` to force an addition sleep of that many microseconds
 after each buffer swap. This might if you want to reduce the framerate or simulate
 a slower machine.
+
+### FILE NAMES
+
+Whenever an output file name is specified, special run-time information
+can be inserted in the file name to avoid overwriting previous files in
+complex situations (i.e. the application is using several processes).
+A sequence of `%` followed by another character is treated depending
+on the second character as follows:
+
+* 'c': the GL context number (sequetially counted from 0), (this is not
+		available for the `GH_VERBOSE_FILE` output, context number is
+		always 0 there)
+* 'p': the PID of the process
+* 't': the current timestamp as `<seconds_since_epoch>.<nanoseconds>'
 
 ### INSTALLATION:
 

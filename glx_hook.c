@@ -68,6 +68,68 @@ get_envui(const char *name, unsigned int def)
 
 #endif
 
+static size_t
+buf_printf(char *buf, size_t pos, size_t size, const char *fmt, ...)
+{
+	va_list args;
+	size_t left=size-pos;
+	int r;
+
+	va_start(args, fmt);
+	r=vsnprintf(buf+pos, left, fmt, args);
+	va_end(args);
+
+	if (r > 0) {
+		size_t written=(size_t)r;
+		pos += (written >= left)?left:written;
+	}
+	return pos;
+}
+
+static void
+parse_name(char *buf, size_t size, const char *name_template, unsigned int ctx_num)
+{
+	struct timespec ts_now;
+	int in_escape=0;
+	size_t pos=0;
+	char c;
+
+	buf[--size]=0; /* resverve space for final NUL terminator */
+	while ( (pos < size) && (c=*(name_template++)) ) {
+		if (in_escape) {
+			switch(c) {
+				case '%':
+					buf[pos++]=c;
+					break;
+				case 'c':
+					pos=buf_printf(buf,pos,size,"%u",ctx_num);
+					break;
+				case 'p':
+					pos=buf_printf(buf,pos,size,"%u",(unsigned)getpid());
+					break;
+				case 't':
+					clock_gettime(CLOCK_REALTIME, &ts_now);
+					pos=buf_printf(buf,pos,size,"%09lld.%ld",
+							(long long)ts_now.tv_sec,
+							ts_now.tv_nsec);
+					break;
+				default:
+					pos=buf_printf(buf,pos,size,"%%%c",c);
+			}
+			in_escape=0;
+		} else {
+			switch(c) {
+				case '%':
+					in_escape=1;
+					break;
+				default:
+					buf[pos++]=c;
+			}
+		}
+	}
+	buf[pos]=0;
+}
+
 /***************************************************************************
  * MESSAGE OUTPUT                                                          *
  ***************************************************************************/
@@ -106,8 +168,11 @@ static void GH_verbose(int level, const char *fmt, ...)
 
 	if (!stream_initialized) {
 		const char *file=getenv("GH_VERBOSE_FILE");
-		if (file) 
-			output_stream=fopen(file,"a+t");
+		if (file) {
+			char buf[PATH_MAX];
+			parse_name(buf, sizeof(buf), file, 0);
+			output_stream=fopen(buf,"a+t");
+		}
 		if (!output_stream)
 			output_stream=GH_DEFAULT_OUTPUT_STREAM;
 		stream_initialized=1;
@@ -592,13 +657,10 @@ frametimes_init(GH_frametimes *ft, GH_frametime_mode mode, unsigned int delay, u
 	}
 
 	if (ft->mode) {
-		const char *file=getenv("GH_FRAMETIME_FILE");
-		if (!file) {
-			file="glx_hook_frametimes";
-		}
+		const char *file=get_envs("GH_FRAMETIME_FILE","glx_hook_frametimes-ctx%c.csv");
 		if (file) {
 			char buf[PATH_MAX];
-			snprintf(buf, sizeof(buf), "%s-ctx%u.csv", file, ctx_num);
+			parse_name(buf, sizeof(buf), file, ctx_num);
 			ft->dump=fopen(buf,"wt");
 		}
 		if (!ft->dump) {
