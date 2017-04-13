@@ -29,6 +29,13 @@
  * helpers                                                                 *
  ***************************************************************************/
 
+static const char *
+get_envs(const char *name, const char *def)
+{
+	const char *s=getenv(name);
+	return (s)?s:def;
+}
+
 static int
 get_envi(const char *name, int def)
 {
@@ -206,12 +213,52 @@ static void *GH_dlsym_next(const char *name)
 	return GH_dlsym(RTLD_NEXT, name);
 }
 
+/* Resolve an unintercepted symbol via the original dlsym(),
+ * special libGL variant: if not found, dymically try to
+ * load libGL.so */
+static void *GH_dlsym_gl(const char *name)
+{
+	static void *libgl_handle=NULL;
+	static int try_load_libgl=1;
+
+	void *ptr=GH_dlsym(RTLD_NEXT, name);
+	if (!ptr) {
+		if (try_load_libgl && !libgl_handle) {
+			const char *libname=get_envs("GH_LIBGL_FILE", "libGL.so");
+			if (libname[0]) {
+				GH_verbose(GH_MSG_DEBUG, "trying to load libGL manually: '%s' ", libname);
+				libgl_handle=dlopen(libname, RTLD_GLOBAL | RTLD_LAZY);
+				if (!libgl_handle) {
+					GH_verbose(GH_MSG_WARNING, "failed to load libGL.so manually");
+					/* give up on loading libGL */
+					try_load_libgl=0;
+				}
+			} else {
+				try_load_libgl=0;
+			}
+		}
+		if (libgl_handle) {
+			GH_verbose(GH_MSG_DEBUG, "trying to find '%s' in manually loaded libGL", name);
+			ptr=GH_dlsym(libgl_handle, name);
+		}
+	}
+	return ptr;
+}
+
 /* helper macro: query the symbol pointer if it is NULL
  * handle the locking */
 #define GH_GET_PTR(func) \
 	pthread_mutex_lock(&GH_fptr_mutex); \
 	if(GH_ ##func == NULL) \
 		GH_ ##func = GH_dlsym_next(#func);\
+	pthread_mutex_unlock(&GH_fptr_mutex)
+
+/* helper macro: query the symbol pointer if it is NULL
+ * handle the locking, special libGL variant */
+#define GH_GET_PTR_GL(func) \
+	pthread_mutex_lock(&GH_fptr_mutex); \
+	if(GH_ ##func == NULL) \
+		GH_ ##func = GH_dlsym_gl(#func);\
 	pthread_mutex_unlock(&GH_fptr_mutex)
 
 #ifdef GH_CONTEXT_TRACKING
@@ -233,7 +280,7 @@ GH_get_gl_proc(const char *name)
 		return proc;
 
 	/* try dlsym as last resort */
-	return GH_dlsym_next(name);
+	return GH_dlsym_gl(name);
 }
 
 #define GH_GET_GL_PROC(func) \
@@ -822,12 +869,12 @@ create_context(GLXContext ctx)
 		pthread_setspecific(ctx_current, NULL);
 		/* query the function pointers for the standard functions
 		 * which might be often called ... */
-		GH_GET_PTR(glXSwapBuffers);
-		GH_GET_PTR(glXMakeCurrent);
-		GH_GET_PTR(glXMakeContextCurrent);
-		GH_GET_PTR(glXMakeCurrentReadSGI);
-		GH_GET_PTR(glFlush);
-		GH_GET_PTR(glFinish);
+		GH_GET_PTR_GL(glXSwapBuffers);
+		GH_GET_PTR_GL(glXMakeCurrent);
+		GH_GET_PTR_GL(glXMakeContextCurrent);
+		GH_GET_PTR_GL(glXMakeCurrentReadSGI);
+		GH_GET_PTR_GL(glFlush);
+		GH_GET_PTR_GL(glFinish);
 	}
 	pthread_mutex_unlock(&ctx_mutex);
 	
@@ -885,13 +932,13 @@ make_current(GLXContext ctx, Display *dpy, GLXDrawable draw, GLXDrawable read)
 				frametimes_init_base(&glc->frametimes);
 				latency_init(&glc->latency, latency, latency_wait_interval);
 				if (glc->inject_swapinterval != GH_SWAP_DONT_SET) {
-					GH_GET_PTR(glXSwapIntervalEXT);
+					GH_GET_PTR_GL(glXSwapIntervalEXT);
 					if (GH_glXSwapIntervalEXT) {
 						GH_verbose(GH_MSG_INFO, "injecting swap interval: %d\n",
 								glc->inject_swapinterval);
 						GH_glXSwapIntervalEXT(dpy, glc->draw, glc->inject_swapinterval);
 					} else {
-						GH_GET_PTR(glXSwapIntervalSGI);
+						GH_GET_PTR_GL(glXSwapIntervalSGI);
 						if (GH_glXSwapIntervalEXT) {
 							GH_verbose(GH_MSG_INFO, "injecting swap interval: %d\n",
 									glc->inject_swapinterval);
@@ -1203,7 +1250,7 @@ extern GLXContext glXCreateContext(Display *dpy, XVisualInfo *vis, GLXContext sh
 {
 	GLXContext ctx;
 
-	GH_GET_PTR(glXCreateContext);
+	GH_GET_PTR_GL(glXCreateContext);
 	ctx=GH_glXCreateContext(dpy, vis, shareList, direct);
 	create_context(ctx);
 	return ctx;
@@ -1213,7 +1260,7 @@ extern GLXContext glXCreateNewContext( Display *dpy, GLXFBConfig config, int ren
 {
 	GLXContext ctx;
 
-	GH_GET_PTR(glXCreateNewContext);
+	GH_GET_PTR_GL(glXCreateNewContext);
 	ctx=GH_glXCreateNewContext(dpy, config, renderType, shareList, direct);
 	create_context(ctx);
 	return ctx;
@@ -1223,7 +1270,7 @@ extern GLXContext glXCreateContextAttribsARB (Display * dpy, GLXFBConfig config,
 {
 	GLXContext ctx;
 
-	GH_GET_PTR(glXCreateContextAttribsARB);
+	GH_GET_PTR_GL(glXCreateContextAttribsARB);
 	ctx=GH_glXCreateContextAttribsARB(dpy, config, shareList, direct, attr);
 	create_context(ctx);
 	return ctx;
@@ -1233,7 +1280,7 @@ extern GLXContext glXImportContextEXT (Display *dpy, GLXContextID id)
 {
 	GLXContext ctx;
 
-	GH_GET_PTR(glXImportContextEXT);
+	GH_GET_PTR_GL(glXImportContextEXT);
 	ctx=GH_glXImportContextEXT(dpy, id);
 	create_context(ctx);
 	return ctx;
@@ -1243,7 +1290,7 @@ extern GLXContext glXCreateContextWithConfigSGIX (Display *dpy, GLXFBConfigSGIX 
 {
 	GLXContext ctx;
 
-	GH_GET_PTR(glXCreateContextWithConfigSGIX);
+	GH_GET_PTR_GL(glXCreateContextWithConfigSGIX);
 	ctx=GH_glXCreateContextWithConfigSGIX(dpy, config, renderType, shareList, direct);
 	create_context(ctx);
 	return ctx;
@@ -1253,14 +1300,14 @@ extern GLXContext glXCreateContextWithConfigSGIX (Display *dpy, GLXFBConfigSGIX 
 
 extern void glXDestroyContext(Display *dpy, GLXContext ctx)
 {
-	GH_GET_PTR(glXDestroyContext);
+	GH_GET_PTR_GL(glXDestroyContext);
 	GH_glXDestroyContext(dpy, ctx);
 	destroy_context(ctx);
 }
 
 extern void glXFreeContextEXT(Display *dpy, GLXContext ctx)
 {
-	GH_GET_PTR(glXFreeContextEXT);
+	GH_GET_PTR_GL(glXFreeContextEXT);
 	GH_glXFreeContextEXT(dpy, ctx);
 	destroy_context(ctx);
 }
@@ -1306,7 +1353,7 @@ extern void glXSwapIntervalEXT(Display *dpy, GLXDrawable drawable,
 		/* ignore the call */
 		return;
 	}
-	GH_GET_PTR(glXSwapIntervalEXT);
+	GH_GET_PTR_GL(glXSwapIntervalEXT);
 	GH_glXSwapIntervalEXT(dpy, drawable, interval);
 }
 
@@ -1317,7 +1364,7 @@ extern int glXSwapIntervalSGI(int interval)
 		/* ignore the call */
 		return 0; /* success */
 	}
-	GH_GET_PTR(glXSwapIntervalSGI);
+	GH_GET_PTR_GL(glXSwapIntervalSGI);
 	return GH_glXSwapIntervalSGI(interval);
 }
 
@@ -1340,7 +1387,7 @@ extern int glXSwapIntervalMESA(unsigned int interval)
 	} else {
 		interval=(unsigned)signed_interval;
 	}
-	GH_GET_PTR(glXSwapIntervalMESA);
+	GH_GET_PTR_GL(glXSwapIntervalMESA);
 	return GH_glXSwapIntervalMESA(interval);
 }
 
@@ -1375,11 +1422,11 @@ extern void glXSwapBuffers(Display *dpy, GLXDrawable drawable)
 		}
 	} else {
 		GH_verbose(GH_MSG_WARNING,"SwapBuffers called without a context\n");
-		GH_GET_PTR(glXSwapBuffers);
+		GH_GET_PTR_GL(glXSwapBuffers);
 		GH_glXSwapBuffers(dpy, drawable);
 	}
 #else /* GH_CONTEXT_TRACKING */
-	GH_GET_PTR(glXSwapBuffers);
+	GH_GET_PTR_GL(glXSwapBuffers);
 	GH_glXSwapBuffers(dpy, drawable);
 #endif /* GH_CONTEXT_TRACKING */
 }

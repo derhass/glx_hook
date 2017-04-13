@@ -78,6 +78,14 @@ scenarios. If you are only interested in the swap interval manipulations,
 you can try to use  the `glx_hook_bare.so` library, which only tries to deal
 with the bare minimum of `glX` (and `dlsym`) functions.
 
+#### Extra Options
+
+If a GL symbol cannot be resolved, glx_hook tries to manually load the
+OpenGL library via `dlopen(3)`. This behavior can be controlled by the
+`GH_LIBGL_FILE` environment variable: If it is not set, `libGL.so` is
+used, but you might want to specify another one, potentially with
+full path. If you set `GH_LIBGL_FILE=""`, libGL loading is disabled.
+
 ### EXPERIMENTAL FEATURES
 
 The following features are only available in `glx_hook.so` (and not `glx_hook_bare.so`):
