@@ -291,10 +291,10 @@ static void *GH_dlsym_gl(const char *name)
 		if (try_load_libgl && !libgl_handle) {
 			const char *libname=get_envs("GH_LIBGL_FILE", "libGL.so");
 			if (libname[0]) {
-				GH_verbose(GH_MSG_DEBUG, "trying to load libGL manually: '%s' ", libname);
+				GH_verbose(GH_MSG_DEBUG, "trying to load libGL manually: '%s'\n", libname);
 				libgl_handle=dlopen(libname, RTLD_GLOBAL | RTLD_LAZY);
 				if (!libgl_handle) {
-					GH_verbose(GH_MSG_WARNING, "failed to load libGL.so manually");
+					GH_verbose(GH_MSG_WARNING, "failed to load '%s' manually\n", libname);
 					/* give up on loading libGL */
 					try_load_libgl=0;
 				}
@@ -303,7 +303,7 @@ static void *GH_dlsym_gl(const char *name)
 			}
 		}
 		if (libgl_handle) {
-			GH_verbose(GH_MSG_DEBUG, "trying to find '%s' in manually loaded libGL", name);
+			GH_verbose(GH_MSG_DEBUG, "trying to find '%s' in manually loaded libGL\n", name);
 			ptr=GH_dlsym(libgl_handle, name);
 		}
 	}
