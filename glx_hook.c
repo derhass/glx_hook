@@ -341,7 +341,7 @@ GH_get_gl_proc(const char *name)
 
 	/* try glXGetProcAddress as second chance */
 	GH_GET_PTR(glXGetProcAddress);
-	if (GH_glXGetProcAddress && (proc=GH_glXGetProcAddressARB(name)) )
+	if (GH_glXGetProcAddress && (proc=GH_glXGetProcAddress(name)) )
 		return proc;
 
 	/* try dlsym as last resort */
