@@ -104,9 +104,9 @@ the app from changing th injected setting later on.
 
 Set `GH_FRAMETIME=$mode` to aquire frame timings.The following modes are
 supported:
-* 0: no frametime measurements (the default)
-* 1: measure frametime on CPU only
-* 2: measure frametimes on CPU and GPU (requires a context >= 3.3, or supporting the
+* `0`: no frametime measurements (the default)
+* `1`: measure frametime on CPU only
+* `2`: measure frametimes on CPU and GPU (requires a context >= 3.3, or supporting the
 [`GL_ARB_timer_query`](https://www.opengl.org/registry/specs/ARB/timer_query.txt)
 extension)
 
@@ -149,10 +149,10 @@ on any frametime file by specifying the `filename` variable on the gnuplot comma
 
 Use `GH_LATENCY=$n` to limit the number of frames the GPU lags behind. The following
 values might be used:
-* -2: no limit (the default)
-* -1: limit to 0, force a sync right _after_ the buffer swap
-* 0: limit to 0, force a sync right _before_ the buffer swap
-* >0: limit the number of pending frames to `$n` (requires a context >= 3.2,
+* `-2`: no limit (the default)
+* `-1`: limit to 0, force a sync right _after_ the buffer swap
+* `0`: limit to 0, force a sync right _before_ the buffer swap
+* `>0`: limit the number of pending frames to `$n` (requires a context >= 3.2,
 or supporting the
 [`GL_ARB_sync`](https://www.opengl.org/registry/specs/ARB/sync.txt)
 extension)
