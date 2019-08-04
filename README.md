@@ -179,7 +179,7 @@ to not miss any display frames.
 #### Sleep injection
 
 Set `GH_SWAP_SLEEP_USECS=$n` to force an addition sleep of that many microseconds
-after each buffer swap. This might if you want to reduce the framerate or simulate
+after each buffer swap. This might be useful if you want to reduce the framerate or simulate
 a slower machine.
 
 ### FILE NAMES
@@ -200,8 +200,8 @@ on the second character as follows:
 ### INSTALLATION:
 
 This requires glibc, as we call some internal glibc functions not intended to
-be called. Tested with glibc-2.13 (from debian wheezy) and glibc-2.24
-(from debian stretch). To build, just type
+be called. Tested with glibc-2.13 (from debian wheezy), glibc-2.24
+(from debian stretch) and glibc-2.28 (from debian buster). To build, just type
 
     $ make
 
