@@ -208,6 +208,12 @@ of 3.2 or higher, the default profile is the core profile. YOu must explicitely 
 if the application would otherwise work with a leagcy context (by not using `GLX_ARB_create_context` or
 specifying an earlier version).
 
+#### GL Debug Output
+
+By setting `GH_GL_DEBUG_OUTPUT` to a non-zero value, [GL debug output](https://www.khronos.org/registry/OpenGL/extensions/ARB/ARB_debug_output.txt) message callbacks will be intercepted. The debug messages will be logged as `INFO` level messages in the GH log. Set `GH_GL_INJECT_DEBUG_OUTPUT` to a non-zero value to inject a call to the
+debug output functionality into the application. Note that to get debug output, you must
+force the creation of a debug GL context if the app does not do it on its own.
+
 ### FILE NAMES
 
 Whenever an output file name is specified, special run-time information

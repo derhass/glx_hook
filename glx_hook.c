@@ -256,6 +256,11 @@ static Bool (* volatile GH_glXMakeCurrent)(Display *, GLXDrawable, GLXContext);
 static Bool (* volatile GH_glXMakeContextCurrent)(Display *, GLXDrawable, GLXDrawable, GLXContext);
 static Bool (* volatile GH_glXMakeCurrentReadSGI)(Display *, GLXDrawable, GLXDrawable, GLXContext);
 
+static void (* volatile GH_glDebugMessageCallback)(GLDEBUGPROC, const GLvoid*);
+static void (* volatile GH_glDebugMessageCallbackARB)(GLDEBUGPROC, const GLvoid*);
+static void (* volatile GH_glDebugMessageCallbackKHR)(GLDEBUGPROC, const GLvoid*);
+static void (* volatile GH_glDebugMessageCallbackAMD)(GLDEBUGPROCAMD, GLvoid*);
+
 /* function pointers we just might qeury */
 static void (* volatile GH_glFlush)(void);
 static void (* volatile GH_glFinish)(void);
@@ -837,11 +842,17 @@ typedef struct gl_context_s {
 	GH_frametimes frametimes;
 	GH_latency latency;
 	useconds_t swap_sleep_usecs;
+	GLDEBUGPROC original_debug_callback;
+	GLDEBUGPROCAMD original_debug_callback_AMD;
+	const GLvoid* original_debug_callback_user_ptr;
+	GLvoid* original_debug_callback_AMD_user_ptr;
 } gl_context_t;
 
 /* flag bits */
 #define GH_GL_CURRENT		0x1
 #define GH_GL_NEVER_CURRENT	0x2
+#define GH_GL_INTERCEPT_DEBUG	0x4
+#define GH_GL_INJECT_DEBUG	0x8
 
 static gl_context_creation_opts_t ctx_creation_opts = {
 	.mutex = PTHREAD_MUTEX_INITIALIZER,
@@ -856,6 +867,14 @@ static gl_context_t * volatile ctx_list=NULL;
 static volatile int ctx_counter=0;
 static pthread_mutex_t ctx_mutex=PTHREAD_MUTEX_INITIALIZER;
 static pthread_key_t ctx_current;
+
+/* forward declarations */
+static void APIENTRY
+GH_debug_callback(GLenum source, GLenum type, GLuint id, GLenum severity,
+		  GLsizei length, const GLchar *message, const GLvoid* userParam);
+static void APIENTRY
+GH_debug_callback_AMD(GLuint id, GLenum category, GLenum severity,
+		  GLsizei length, const GLchar *message, GLvoid* userParam);
 
 static void
 add_ctx(gl_context_t *glc)
@@ -881,6 +900,10 @@ create_ctx(GLXContext ctx, unsigned int num)
 		glc->inject_swapinterval=GH_SWAP_DONT_SET;
 		glc->flags=GH_GL_NEVER_CURRENT;
 		glc->num=num;
+		glc->original_debug_callback=(GLDEBUGPROC)NULL;
+		glc->original_debug_callback_AMD=(GLDEBUGPROCAMD)NULL;
+		glc->original_debug_callback_user_ptr=NULL;
+		glc->original_debug_callback_AMD_user_ptr=NULL;
 
 		glc->swap_sleep_usecs=0;
 		frametimes_init(&glc->frametimes, GH_FRAMETIME_NONE, 0, 0, 0, num);
@@ -940,6 +963,12 @@ read_config(gl_context_t *glc)
 {
 	glc->swapbuffers=get_envi("GH_SWAPBUFFERS",0);
 	glc->inject_swapinterval=get_envi("GH_INJECT_SWAPINTERVAL", GH_SWAP_DONT_SET);
+	if (get_envi("GH_GL_DEBUG_OUTPUT",0)) {
+		glc->flags |= GH_GL_INTERCEPT_DEBUG;
+	}
+	if (get_envi("GH_GL_INJECT_DEBUG_OUTPUT",0)) {
+		glc->flags |= GH_GL_INJECT_DEBUG;
+	}
 }
 
 static void
@@ -1034,6 +1063,33 @@ make_current(GLXContext ctx, Display *dpy, GLXDrawable draw, GLXDrawable read)
 						}
 					}
 				}
+				if (glc->flags & GH_GL_INJECT_DEBUG) {
+					GH_GET_PTR_GL(glDebugMessageCallback);
+					if (GH_glDebugMessageCallback) {
+						GH_glDebugMessageCallback(GH_debug_callback, glc);
+						GH_verbose(GH_MSG_INFO, "injecting debug callback [core]\n");
+					} else {
+						GH_GET_PTR_GL(glDebugMessageCallbackARB);
+						if (GH_glDebugMessageCallbackARB) {
+							GH_glDebugMessageCallbackARB(GH_debug_callback, glc);
+							GH_verbose(GH_MSG_INFO, "injecting debug callback [ARB]\n");
+						} else {
+							GH_GET_PTR_GL(glDebugMessageCallbackKHR);
+							if (GH_glDebugMessageCallbackKHR) {
+								GH_glDebugMessageCallbackKHR(GH_debug_callback, glc);
+								GH_verbose(GH_MSG_INFO, "injecting debug callback [KHR]\n");
+							} else {
+								GH_GET_PTR_GL(glDebugMessageCallbackAMD);
+								if (GH_glDebugMessageCallbackAMD) {
+									GH_glDebugMessageCallbackAMD(GH_debug_callback_AMD, glc);
+									GH_verbose(GH_MSG_INFO, "injecting debug callback [AMD]\n");
+								} else {
+									GH_verbose(GH_MSG_WARNING, "failed ot iject debug message callback\n");
+								}
+							}
+						}
+					}
+				}
 			}
 		}
 	} else {
@@ -1041,6 +1097,181 @@ make_current(GLXContext ctx, Display *dpy, GLXDrawable draw, GLXDrawable read)
 	}
 
 	pthread_setspecific(ctx_current, glc);
+}
+
+/****************************************************************************
+ * GL DEBUG MESSAGES                                                        *
+ ****************************************************************************/
+
+/* Newer versions of the GL support the generation of human-readable messages
+   for GL errors, performance warnings and hints. These messages are
+   forwarded to a debug callback which has to be registered with the GL
+   context. Debug output may only be available in special debug context... */
+
+/* translate the debug message "source" enum to human-readable string */
+static const char *
+translateDebugSourceEnum(GLenum source)
+{
+	const char *s;
+
+	switch (source) {
+		case GL_DEBUG_SOURCE_API:
+			s="API";
+			break;
+		case GL_DEBUG_SOURCE_WINDOW_SYSTEM:
+			s="window system";
+			break;
+		case GL_DEBUG_SOURCE_SHADER_COMPILER:
+			s="shader compiler";
+			break;
+		case GL_DEBUG_SOURCE_THIRD_PARTY:
+			s="3rd party";
+			break;
+		case GL_DEBUG_SOURCE_APPLICATION:
+			s="application";
+			break;
+		case GL_DEBUG_SOURCE_OTHER:
+			s="other";
+			break;
+		default:
+			s="[UNKNOWN SOURCE]";
+	}
+
+	return s;
+}
+
+/* translate the debug message "category" enum to human-readable string */
+static const char *
+translateDebugCategoryEnum(GLenum cat)
+{
+	const char *s;
+
+	switch (cat) {
+		case GL_DEBUG_CATEGORY_API_ERROR_AMD:
+			s="API error";
+			break;
+		case GL_DEBUG_CATEGORY_WINDOW_SYSTEM_AMD:
+			s="window system";
+			break;
+		case GL_DEBUG_CATEGORY_DEPRECATION_AMD:
+			s="deprecation";
+			break;
+		case GL_DEBUG_CATEGORY_UNDEFINED_BEHAVIOR_AMD:
+			s="undefined behavior";
+			break;
+		case GL_DEBUG_CATEGORY_PERFORMANCE_AMD:
+			s="performance";
+			break;
+		case GL_DEBUG_CATEGORY_SHADER_COMPILER_AMD:
+			s="shader compiler";
+			break;
+		case GL_DEBUG_CATEGORY_APPLICATION_AMD:
+			s="application";
+			break;
+		case GL_DEBUG_CATEGORY_OTHER_AMD:
+			s="other";
+			break;
+		default:
+			s="[UNKNOWN CATEGORY]";
+	}
+
+	return s;
+}
+
+/* translate the debug message "type" enum to human-readable string */
+static const char *
+translateDebugTypeEnum(GLenum type)
+{
+	const char *s;
+
+	switch (type) {
+		case GL_DEBUG_TYPE_ERROR:
+			s="error";
+			break;
+		case GL_DEBUG_TYPE_DEPRECATED_BEHAVIOR:
+			s="deprecated";
+			break;
+		case GL_DEBUG_TYPE_UNDEFINED_BEHAVIOR:
+			s="undefined behavior";
+			break;
+		case GL_DEBUG_TYPE_PORTABILITY:
+			s="portability";
+			break;
+		case GL_DEBUG_TYPE_PERFORMANCE:
+			s="performance";
+			break;
+		case GL_DEBUG_TYPE_OTHER:
+			s="other";
+			break;
+		default:
+			s="[UNKNOWN TYPE]";
+	}
+	return s;
+}
+
+/* translate the debug message "xeverity" enum to human-readable string */
+static const char *
+translateDebugSeverityEnum(GLenum severity)
+{
+	const char *s;
+
+	switch (severity) {
+		case GL_DEBUG_SEVERITY_HIGH:
+			s="high";
+			break;
+		case GL_DEBUG_SEVERITY_MEDIUM:
+			s="medium";
+			break;
+		case GL_DEBUG_SEVERITY_LOW:
+			s="low";
+			break;
+		case GL_DEBUG_SEVERITY_NOTIFICATION:
+			s="notification";
+			break;
+		default:
+			s="[UNKNOWN SEVERITY]";
+	}
+
+	return s;
+}
+
+/* our debug callback */
+static void APIENTRY
+GH_debug_callback(GLenum source, GLenum type, GLuint id, GLenum severity,
+		  GLsizei length, const GLchar *message, const GLvoid* userParam)
+{
+	const gl_context_t *glc=(const gl_context_t*)userParam;
+	if (glc) {
+		GH_verbose(GH_MSG_INFO, "GLDEBUG: %s %s %s [0x%x]: %s\n",
+					translateDebugSourceEnum(source),
+					translateDebugTypeEnum(type),
+					translateDebugSeverityEnum(severity),
+					id, message);
+		if (glc->original_debug_callback) {
+			glc->original_debug_callback(source, type, id, severity,
+						     length, message, glc->original_debug_callback_user_ptr);
+		}
+	}
+}
+
+/* our debug callback AMD */
+static void APIENTRY
+GH_debug_callback_AMD(GLuint id, GLenum category, GLenum severity,
+		  GLsizei length, const GLchar *message, GLvoid* userParam)
+{
+	const gl_context_t *glc=(const gl_context_t*)userParam;
+
+	if (glc) {
+		GH_verbose(GH_MSG_INFO, "GLDEBUG[AMD]: %s %s %s [0x%x]: %s\n",
+					translateDebugCategoryEnum(category),
+					translateDebugSeverityEnum(severity),
+					id, message);
+		if (glc->original_debug_callback_AMD) {
+			glc->original_debug_callback_AMD(id, category, severity,
+							 length, message,
+							 glc->original_debug_callback_AMD_user_ptr);
+		}
+	}
 }
 
 /***************************************************************************
@@ -1679,6 +1910,92 @@ extern Bool glXMakeCurrentReadSGI(Display *dpy, GLXDrawable draw, GLXDrawable re
 	return result;
 }
 
+/* ---------- GL Debug Output ---------- */
+
+extern void glDebugMessageCallback(GLDEBUGPROC proc, const GLvoid *user_ptr)
+{
+	GH_GET_PTR_GL(glDebugMessageCallback);
+	if (GH_glDebugMessageCallback) {
+		gl_context_t *glc=(gl_context_t*)pthread_getspecific(ctx_current);
+		if (glc) {
+			glc->original_debug_callback = proc;
+			glc->original_debug_callback_user_ptr = user_ptr;
+
+			if (glc->flags & GH_GL_INTERCEPT_DEBUG) {
+				GH_verbose(GH_MSG_INFO, "injecting debug output [core]!\n");
+				proc = GH_debug_callback;
+				user_ptr = glc;
+			}
+		} else {
+			GH_verbose(GH_MSG_WARNING, "debug message callback without current context!\n");
+		}
+		GH_glDebugMessageCallback(proc, user_ptr);
+	}
+}
+
+extern void glDebugMessageCallbackARB(GLDEBUGPROC proc, const GLvoid *user_ptr)
+{
+	GH_GET_PTR_GL(glDebugMessageCallbackARB);
+	if (GH_glDebugMessageCallbackARB) {
+		gl_context_t *glc=(gl_context_t*)pthread_getspecific(ctx_current);
+		if (glc) {
+			glc->original_debug_callback = proc;
+			glc->original_debug_callback_user_ptr = user_ptr;
+
+			if (glc->flags & GH_GL_INTERCEPT_DEBUG) {
+				GH_verbose(GH_MSG_INFO, "injecting debug output [ARB]!\n");
+				proc = GH_debug_callback;
+				user_ptr = glc;
+			}
+		} else {
+			GH_verbose(GH_MSG_WARNING, "debug message callback without current context!\n");
+		}
+		GH_glDebugMessageCallbackARB(proc, user_ptr);
+	}
+}
+
+extern void glDebugMessageCallbackKHR(GLDEBUGPROC proc, const GLvoid *user_ptr)
+{
+	GH_GET_PTR_GL(glDebugMessageCallbackKHR);
+	if (GH_glDebugMessageCallbackKHR) {
+		gl_context_t *glc=(gl_context_t*)pthread_getspecific(ctx_current);
+		if (glc) {
+			glc->original_debug_callback = proc;
+			glc->original_debug_callback_user_ptr = user_ptr;
+
+			if (glc->flags & GH_GL_INTERCEPT_DEBUG) {
+				GH_verbose(GH_MSG_INFO, "injecting debug output [KHR]!\n");
+				proc = GH_debug_callback;
+				user_ptr = glc;
+			}
+		} else {
+			GH_verbose(GH_MSG_WARNING, "debug message callback without current context!\n");
+		}
+		GH_glDebugMessageCallbackKHR(proc, user_ptr);
+	}
+}
+
+extern void glDebugMessageCallbackAMD(GLDEBUGPROCAMD proc, GLvoid *user_ptr)
+{
+	GH_GET_PTR_GL(glDebugMessageCallbackAMD);
+	if (GH_glDebugMessageCallbackAMD) {
+		gl_context_t *glc=(gl_context_t*)pthread_getspecific(ctx_current);
+		if (glc) {
+			glc->original_debug_callback_AMD = proc;
+			glc->original_debug_callback_AMD_user_ptr = user_ptr;
+
+			if (glc->flags & GH_GL_INTERCEPT_DEBUG) {
+				GH_verbose(GH_MSG_INFO, "injecting debug output [AMD]!\n");
+				proc = GH_debug_callback_AMD;
+				user_ptr = glc;
+			}
+		} else {
+			GH_verbose(GH_MSG_WARNING, "debug message callback without current context!\n");
+		}
+		GH_glDebugMessageCallbackAMD(proc, user_ptr);
+	}
+}
+
 #endif /* GH_CONTEXT_TRACKING */
 
 /* ---------- Swap Interval---------- */
@@ -1819,6 +2136,10 @@ static void* GH_get_interceptor(const char *name, GH_resolve_func query,
 	GH_INTERCEPT(glXMakeCurrent);
 	GH_INTERCEPT(glXMakeContextCurrent);
 	GH_INTERCEPT(glXMakeCurrentReadSGI);
+	GH_INTERCEPT(glDebugMessageCallback);
+	GH_INTERCEPT(glDebugMessageCallbackARB);
+	GH_INTERCEPT(glDebugMessageCallbackKHR);
+	GH_INTERCEPT(glDebugMessageCallbackAMD);
 #endif
 #ifdef GH_SWAPBUFFERS_INTERCEPT
 	if (do_swapbuffers) {
