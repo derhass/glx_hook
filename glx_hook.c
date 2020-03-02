@@ -260,6 +260,10 @@ static Bool (* volatile GH_glXMakeCurrentReadSGI)(Display *, GLXDrawable, GLXDra
 static void (* volatile GH_glFlush)(void);
 static void (* volatile GH_glFinish)(void);
 
+static GLXFBConfig* (* volatile GH_glXGetFBConfigs)(Display*, int, int*);
+static int (* volatile GH_glXGetFBConfigAttrib)(Display*, GLXFBConfig, int, int*);
+static int (* volatile GH_XFree)(void*);
+
 #ifdef GH_CONTEXT_TRACKING
 /* OpenGL extension functions we might query */
 static PFNGLGENQUERIESPROC GH_glGenQueries=NULL;
@@ -807,6 +811,19 @@ frametimes_after_swap(GH_frametimes *ft)
  * GL context tracking                                                     *
  ***************************************************************************/
 
+typedef struct gl_context_ceation_opts_s {
+	pthread_mutex_t mutex;
+	unsigned int flags;
+	int force_version[2];
+	int force_flags_on;
+	int force_flags_off;
+	int force_profile_on;
+	int force_profile_off;
+} gl_context_creation_opts_t;
+
+/* flag bits */
+#define GH_GLCTX_CREATE_INITIALIZED	0x1
+
 typedef struct gl_context_s {
 	GLXContext ctx;
 	GLXDrawable draw;
@@ -826,6 +843,15 @@ typedef struct gl_context_s {
 #define GH_GL_CURRENT		0x1
 #define GH_GL_NEVER_CURRENT	0x2
 
+static gl_context_creation_opts_t ctx_creation_opts = {
+	.mutex = PTHREAD_MUTEX_INITIALIZER,
+	.flags = 0,
+	.force_version = {-1, -1},
+	.force_flags_on = 0,
+	.force_flags_off = 0,
+	.force_profile_on = 0,
+	.force_profile_off = 0
+};
 static gl_context_t * volatile ctx_list=NULL;
 static volatile int ctx_counter=0;
 static pthread_mutex_t ctx_mutex=PTHREAD_MUTEX_INITIALIZER;
@@ -1015,6 +1041,246 @@ make_current(GLXContext ctx, Display *dpy, GLXDrawable draw, GLXDrawable read)
 	}
 
 	pthread_setspecific(ctx_current, glc);
+}
+
+/***************************************************************************
+ * GL context creation overrides                                           *
+ ***************************************************************************/
+
+static void context_creation_opts_init(gl_context_creation_opts_t *opts)
+{
+	if (get_envi("GH_FORCE_GL_CONTEXT_PROFILE_CORE", 0)) {
+		opts->force_profile_on = 0x1;
+		opts->force_profile_off = 0x2;
+	}
+	if (get_envi("GH_FORCE_GL_CONTEXT_PROFILE_COMPAT", 0)) {
+		opts->force_profile_on = 0x2;
+		opts->force_profile_off = 0x1;
+	}
+	if (get_envi("GH_FORCE_GL_CONTEXT_FLAGS_NO_FORWARD_COMPAT", 0)) {
+		opts->force_flags_off = 0x2;
+	}
+	if (get_envi("GH_FORCE_GL_CONTEXT_FLAGS_NO_DEBUG", 0)) {
+		opts->force_flags_off = 0x1;
+	}
+	if (get_envi("GH_FORCE_GL_CONTEXT_FLAGS_FORWARD_COMPAT", 0)) {
+		opts->force_flags_on = 0x2;
+	}
+	if (get_envi("GH_FORCE_GL_CONTEXT_FLAGS_DEBUG", 0)) {
+		opts->force_flags_on = 0x1;
+	}
+
+	opts->force_version[0] = get_envi("GH_FORCE_GL_VERSION_MAJOR", opts->force_version[0]);
+	opts->force_version[1] = get_envi("GH_FORCE_GL_VERSION_MINOR", opts->force_version[1]);
+
+	
+	opts->force_flags_on = get_envi("GH_FORCE_GL_CONTEXT_FLAGS_ON", opts->force_flags_on);
+	opts->force_flags_off = get_envi("GH_FORCE_GL_CONTEXT_FLAGS_OFF", opts->force_flags_off);
+
+	opts->force_profile_on = get_envi("GH_FORCE_GL_CONTEXT_PROFILE_MASK_ON", opts->force_profile_on);
+	opts->force_profile_off = get_envi("GH_FORCE_GL_CONTEXT_PROFILE_MASK_OFF", opts->force_profile_off);
+}
+
+static int need_creation_override(const gl_context_creation_opts_t *opts)
+{
+	if (opts->force_version[0] > 0) {
+		return 1;
+	}
+	if (opts->force_flags_on || opts->force_flags_off) {
+		return 2;
+	}
+	if (opts->force_profile_on || opts->force_profile_off) {
+		return 3;
+	}
+
+	return 0;
+}
+
+static int* get_override_attributes(gl_context_creation_opts_t *opts, const int *attribs)
+{
+	const int our_count=4;
+	int count = 0;
+	int additional_count = 0;
+	int req_version[2] = {1,0};
+	int req_profile_mask = 0x1; /* Core Profile */
+	int req_flags = 0;
+	int *attr_override;
+	int pos=0;
+	int i;
+
+	GH_verbose(GH_MSG_INFO, "overriding context attributes for creation\n");
+	if (attribs) {
+		while (attribs[2*count] != None) {
+			unsigned int name = (unsigned)attribs[2*count];
+			int value = attribs[2*count + 1];
+			GH_verbose(GH_MSG_INFO, "originally requested attrib: 0x%x = %d\n", name, value);
+			switch(name) {
+				case 0x2091: /* GLX_CONTEXT_MAJOR_VERSION_ARB */
+					req_version[0] = value;
+					break;
+				case 0x2092: /* GLX_CONTEXT_MINOR_VERSION_ARB */
+					req_version[1] = value;
+					break;
+				case 0x9126: /* GLX_CONTEXT_PROFILE_MASK_ARB */ 
+					req_profile_mask = value;
+					break;
+				case 0x2094: /* GLX_CONTEXT_FLAGS_ARB */
+					req_flags = value;
+					break;
+				default:
+					additional_count++;
+			}
+			count++;
+		}
+	}
+
+	if (opts->force_version[0] > 0) {
+		GH_verbose(GH_MSG_INFO, "overriding context major version from %d to %d\n",
+			   req_version[0], opts->force_version[0]);
+		req_version[0] = opts->force_version[0];
+	}
+	if (opts->force_version[1] >= 0) {
+		GH_verbose(GH_MSG_INFO, "overriding context minor version from %d to %d\n",
+			   req_version[1], opts->force_version[1]);
+		req_version[1] = opts->force_version[1];
+	}
+	if (opts->force_flags_on || opts->force_flags_off) {
+		int new_flags = (req_flags | opts->force_flags_on)&(~opts->force_flags_off);
+		GH_verbose(GH_MSG_INFO, "overriding context flags from 0x%x to 0x%x\n",
+			   (unsigned)req_flags, (unsigned)new_flags);
+		req_flags = new_flags;
+	}
+	if (opts->force_profile_on || opts->force_profile_off) {
+		int new_profile = (req_profile_mask | opts->force_profile_on)&(~opts->force_profile_off);
+		GH_verbose(GH_MSG_INFO, "overriding context profile mask from 0x%x to 0x%x\n",
+			   (unsigned)req_profile_mask, (unsigned)new_profile);
+		req_profile_mask = new_profile;
+	}
+
+	attr_override = malloc(sizeof(*attr_override) * ((additional_count + our_count) * 2 + 2));
+	if (!attr_override) {
+		return NULL;
+	}
+
+	attr_override[pos++] = 0x2091; /* GLX_CONTEXT_MAJOR_VERSION_ARB*/
+	attr_override[pos++] = req_version[0];
+	attr_override[pos++] = 0x2092; /* GLX_CONTEXT_MINOR_VERSION_ARB*/
+	attr_override[pos++] = req_version[1];
+	attr_override[pos++] = 0x9126; /* GLX_CONTEXT_PROFILE_MASK_ARB*/
+	attr_override[pos++] = req_profile_mask;
+	attr_override[pos++] = 0x2094; /* GLX_CONTEXT_FLAGS_ARB*/
+	attr_override[pos++] = req_flags;
+
+	for (i=0; i<count; i++) {
+		unsigned int name = (unsigned)attribs[2*i];
+		int value = attribs[2*i+1];
+		switch (name) {
+			case 0x2091: /* GLX_CONTEXT_MAJOR_VERSION_ARB */
+			case 0x2092: /* GLX_CONTEXT_MINOR_VERSION_ARB */
+			case 0x9126: /* GLX_CONTEXT_PROFILE_MASK_ARB */ 
+			case 0x2094: /* GLX_CONTEXT_FLAGS_ARB */
+				(void)0;
+				break;
+			default:
+				attr_override[pos++] = (int)name;
+				attr_override[pos++] = value;
+		}
+	}
+	attr_override[pos++] = None;
+	attr_override[pos++] = None;
+
+	return attr_override;
+}
+
+static const GLXFBConfig* get_fbconfig_for_visual(Display *dpy, XVisualInfo *vis, GLXFBConfig *cfg)
+{
+	GLXFBConfig *cfgs;
+	const GLXFBConfig *new_cfg = NULL;
+	/* TODO: what about the screen number? */
+	int screen=0;
+	int count;
+
+	GH_GET_PTR_GL(glXGetFBConfigs);
+	GH_GET_PTR_GL(glXGetFBConfigAttrib);
+	GH_GET_PTR(XFree);
+
+	if (!GH_glXGetFBConfigs || !GH_glXGetFBConfigAttrib || !GH_XFree) {
+		GH_verbose(GH_MSG_ERROR, "glXGetFBConfigs or glXGetFBConfigAttrib or XFree not found!\n");
+		return NULL;
+	}
+
+	cfgs=GH_glXGetFBConfigs(dpy, screen, &count);
+
+	if (cfgs && count > 0) {
+		int i;
+		for (i=0; i<count; i++) {
+			int value = -1;
+			int res = GH_glXGetFBConfigAttrib(dpy, cfgs[i], GLX_VISUAL_ID, &value);
+			if (res == Success) {
+				GH_verbose(GH_MSG_DEBUG, "fbconfig %d for visual ID %d\n", i, value);
+				if (value == (int)vis->visualid) {
+					GH_verbose(GH_MSG_INFO, "found fbconfig %d for visual ID %d\n", i, value);
+					*cfg = cfgs[i];
+					new_cfg=cfg;
+					break;
+				}
+			} else {
+				GH_verbose(GH_MSG_WARNING, "glxGerFBConfigAttrib failed!\n");
+			}
+		}
+	}
+
+	if (cfgs) {
+		GH_XFree(cfgs);
+	}
+
+	return new_cfg;
+}
+
+static GLXContext override_create_context(Display *dpy, XVisualInfo *vis, const GLXFBConfig *fbconfig, GLXContext shareList, Bool direct, const int *attribs)
+{
+	GLXFBConfig internal_fbconfig;
+
+	pthread_mutex_lock(&ctx_creation_opts.mutex);
+	if (!(ctx_creation_opts.flags & GH_GLCTX_CREATE_INITIALIZED)) {
+		context_creation_opts_init(&ctx_creation_opts);
+		ctx_creation_opts.flags |= GH_GLCTX_CREATE_INITIALIZED;
+	}
+	pthread_mutex_unlock(&ctx_creation_opts.mutex);
+
+	if (need_creation_override(&ctx_creation_opts)) {
+		GLXContext ctx;
+		int *attribs_override = get_override_attributes(&ctx_creation_opts, attribs);
+		if (!attribs_override) {
+			GH_verbose(GH_MSG_WARNING, "failed to generate context creation override attributes!\n");
+			return NULL;
+		}
+		if (!fbconfig) {
+			if (!vis) {
+				GH_verbose(GH_MSG_WARNING, "create context attempt without Visual and FBConfig!\n");
+				free(attribs_override);
+				return NULL;	
+			}
+			/* find FBConfig vor Visual ... */
+			fbconfig=get_fbconfig_for_visual(dpy, vis, &internal_fbconfig);
+			if (!fbconfig) {
+				GH_verbose(GH_MSG_WARNING, "create context: failed to get fbconfig for visual!\n");
+				free(attribs_override);
+				return NULL;	
+			}
+		}
+		GH_GET_PTR_GL(glXCreateContextAttribsARB);
+		ctx=GH_glXCreateContextAttribsARB(dpy, *fbconfig, shareList, direct, attribs_override);
+		if (ctx == NULL) {
+			GH_verbose(GH_MSG_WARNING, "overridden context creation failed!\n");
+		} else {
+			GH_verbose(GH_MSG_INFO, "created context %p with overriden attributes!\n", ctx);
+		}
+		free(attribs_override);
+		return ctx;
+
+	}
+	return NULL;
 }
 
 #endif /* GH_CONTEXT_TRACKING */
@@ -1312,8 +1578,11 @@ extern GLXContext glXCreateContext(Display *dpy, XVisualInfo *vis, GLXContext sh
 {
 	GLXContext ctx;
 
-	GH_GET_PTR_GL(glXCreateContext);
-	ctx=GH_glXCreateContext(dpy, vis, shareList, direct);
+	ctx = override_create_context(dpy, vis, NULL, shareList, direct, NULL);
+	if (ctx == NULL) {
+		GH_GET_PTR_GL(glXCreateContext);
+		ctx=GH_glXCreateContext(dpy, vis, shareList, direct);
+	}
 	create_context(ctx);
 	return ctx;
 }
@@ -1322,8 +1591,11 @@ extern GLXContext glXCreateNewContext( Display *dpy, GLXFBConfig config, int ren
 {
 	GLXContext ctx;
 
-	GH_GET_PTR_GL(glXCreateNewContext);
-	ctx=GH_glXCreateNewContext(dpy, config, renderType, shareList, direct);
+	ctx = override_create_context(dpy, NULL, &config, shareList, direct, NULL);
+	if (ctx == NULL) {
+		GH_GET_PTR_GL(glXCreateNewContext);
+		ctx=GH_glXCreateNewContext(dpy, config, renderType, shareList, direct);
+	}
 	create_context(ctx);
 	return ctx;
 }
@@ -1332,8 +1604,11 @@ extern GLXContext glXCreateContextAttribsARB (Display * dpy, GLXFBConfig config,
 {
 	GLXContext ctx;
 
-	GH_GET_PTR_GL(glXCreateContextAttribsARB);
-	ctx=GH_glXCreateContextAttribsARB(dpy, config, shareList, direct, attr);
+	ctx = override_create_context(dpy, NULL, &config, shareList, direct, attr);
+	if (ctx == NULL) {
+		GH_GET_PTR_GL(glXCreateContextAttribsARB);
+		ctx=GH_glXCreateContextAttribsARB(dpy, config, shareList, direct, attr);
+	}
 	create_context(ctx);
 	return ctx;
 }
@@ -1352,6 +1627,7 @@ extern GLXContext glXCreateContextWithConfigSGIX (Display *dpy, GLXFBConfigSGIX 
 {
 	GLXContext ctx;
 
+	/* TODO: override_create_context for this case */
 	GH_GET_PTR_GL(glXCreateContextWithConfigSGIX);
 	ctx=GH_glXCreateContextWithConfigSGIX(dpy, config, renderType, shareList, direct);
 	create_context(ctx);

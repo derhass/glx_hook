@@ -182,6 +182,32 @@ Set `GH_SWAP_SLEEP_USECS=$n` to force an addition sleep of that many microsecond
 after each buffer swap. This might be useful if you want to reduce the framerate or simulate
 a slower machine.
 
+#### GL Context attribute overrides
+
+You can override the attributes for GL context creation. This will require the
+[`GLX_ARB_create_context`](https://www.khronos.org/registry/OpenGL/extensions/ARB/GLX_ARB_create_context.txt)
+extension. The following overrides are defined:
+* `GH_FORCE_GL_VERSION_MAJOR`: set the the GL major version number to request
+* `GH_FORCE_GL_VERSION_MINOR`: set the the GL minor version number to request
+* `GH_FORCE_GL_CONTEXT_PROFILE_CORE`: set to non-zero to force the creation of a core profile. (Requires GL version of at least 3.2)
+* `GH_FORCE_GL_CONTEXT_PROFILE_COMPAT`: set to non-zero to force the creation of a compat profile profile. (Requires GL version of at least 3.2)
+* `GH_FORCE_GL_CONTEXT_FLAGS_NO_DEBUG`: set to non-zero to disable debug contexts.
+* `GH_FORCE_GL_CONTEXT_FLAGS_DEBUG`: set to non-zero to force debug contexts. `GH_FORCE_GL_CONTEXT_FLAGS_DEBUG` takes precedence over `GH_FORCE_GL_CONTEXT_FLAGS_NO_DEBUG`.
+* `GH_FORCE_GL_CONTEXT_FLAGS_NO_FORWARD_COMPAT`: set to non-zero to disable forwadr-compatible contexts.
+* `GH_FORCE_GL_CONTEXT_FLAGS_FORWARD_COMPAT`: set to non-zero to force forward-compatible contexts. `GH_FORCE_GL_CONTEXT_FLAGS_FORWARD_COMPAT` takes precedence over `GH_FORCE_GL_CONTEXT_FLAGS_NO_FORWARD_COMPAT`.
+
+You can also directly specify the bitmasks for the context flags and profile mask (see the various `GLX` context creation extensions for the actual values):
+* `GH_FORCE_GL_CONTEXT_FLAGS_ON` manaully specify a the bits which must be forced on in the context flags bitmask.
+* `GH_FORCE_GL_CONTEXT_FLAGS_OFF` manaully specify a the bits which must be forced off in the context flags bitmask.
+* `GH_FORCE_GL_CONTEXT_PROFILE_MASK_ON` manaully specify a the bits which must be forced on in the context profile bitmask.
+* `GH_FORCE_GL_CONTEXT_PROFILE_MASK_OFF` manaully specify a the bits which must be forced off in the context profile bitmask.
+When setting these, they will override any settings by the other `GL_FORCE_GL_*` environment variables.
+
+Note that the context profile is only relevant for GL version 3.2 and up. When forcing a GL version
+of 3.2 or higher, the default profile is the core profile. YOu must explicitely request a compat profile
+if the application would otherwise work with a leagcy context (by not using `GLX_ARB_create_context` or
+specifying an earlier version).
+
 ### FILE NAMES
 
 Whenever an output file name is specified, special run-time information
