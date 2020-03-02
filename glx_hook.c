@@ -1115,16 +1115,16 @@ static int* get_override_attributes(gl_context_creation_opts_t *opts, const int 
 			int value = attribs[2*count + 1];
 			GH_verbose(GH_MSG_INFO, "originally requested attrib: 0x%x = %d\n", name, value);
 			switch(name) {
-				case 0x2091: /* GLX_CONTEXT_MAJOR_VERSION_ARB */
+				case GLX_CONTEXT_MAJOR_VERSION_ARB:
 					req_version[0] = value;
 					break;
-				case 0x2092: /* GLX_CONTEXT_MINOR_VERSION_ARB */
+				case GLX_CONTEXT_MINOR_VERSION_ARB:
 					req_version[1] = value;
 					break;
-				case 0x9126: /* GLX_CONTEXT_PROFILE_MASK_ARB */ 
+				case GLX_CONTEXT_PROFILE_MASK_ARB:
 					req_profile_mask = value;
 					break;
-				case 0x2094: /* GLX_CONTEXT_FLAGS_ARB */
+				case GLX_CONTEXT_FLAGS_ARB:
 					req_flags = value;
 					break;
 				default:
@@ -1162,23 +1162,23 @@ static int* get_override_attributes(gl_context_creation_opts_t *opts, const int 
 		return NULL;
 	}
 
-	attr_override[pos++] = 0x2091; /* GLX_CONTEXT_MAJOR_VERSION_ARB*/
+	attr_override[pos++] = GLX_CONTEXT_MAJOR_VERSION_ARB;
 	attr_override[pos++] = req_version[0];
-	attr_override[pos++] = 0x2092; /* GLX_CONTEXT_MINOR_VERSION_ARB*/
+	attr_override[pos++] = GLX_CONTEXT_MINOR_VERSION_ARB;
 	attr_override[pos++] = req_version[1];
-	attr_override[pos++] = 0x9126; /* GLX_CONTEXT_PROFILE_MASK_ARB*/
+	attr_override[pos++] = GLX_CONTEXT_PROFILE_MASK_ARB;
 	attr_override[pos++] = req_profile_mask;
-	attr_override[pos++] = 0x2094; /* GLX_CONTEXT_FLAGS_ARB*/
+	attr_override[pos++] = GLX_CONTEXT_FLAGS_ARB;
 	attr_override[pos++] = req_flags;
 
 	for (i=0; i<count; i++) {
 		unsigned int name = (unsigned)attribs[2*i];
 		int value = attribs[2*i+1];
 		switch (name) {
-			case 0x2091: /* GLX_CONTEXT_MAJOR_VERSION_ARB */
-			case 0x2092: /* GLX_CONTEXT_MINOR_VERSION_ARB */
-			case 0x9126: /* GLX_CONTEXT_PROFILE_MASK_ARB */ 
-			case 0x2094: /* GLX_CONTEXT_FLAGS_ARB */
+			case GLX_CONTEXT_MAJOR_VERSION_ARB:
+			case GLX_CONTEXT_MINOR_VERSION_ARB:
+			case GLX_CONTEXT_PROFILE_MASK_ARB:
+			case GLX_CONTEXT_FLAGS_ARB:
 				(void)0;
 				break;
 			default:
