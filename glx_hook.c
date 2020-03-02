@@ -1267,7 +1267,7 @@ dlvsym(void *handle, const char *name, const char *version)
 	void *interceptor;
 	void *ptr;
 	GH_GET_PTR(dlvsym); \
-	interceptor=GH_get_interceptor(name, GH_dlsym_next, "dlsym");
+	interceptor=GH_get_interceptor(name, GH_dlsym_next, "dlvsym");
 	ptr=(interceptor)?interceptor:GH_dlvsym(handle,name,version);
 	GH_verbose(GH_MSG_DEBUG_INTERCEPTION,"dlvsym(%p, %s, %s) = %p%s\n",handle,name,version,ptr,
 		interceptor?" [intercepted]":"");
