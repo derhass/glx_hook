@@ -187,14 +187,24 @@ a slower machine.
 You can override the attributes for GL context creation. This will require the
 [`GLX_ARB_create_context`](https://www.khronos.org/registry/OpenGL/extensions/ARB/GLX_ARB_create_context.txt)
 extension. The following overrides are defined:
-* `GH_FORCE_GL_VERSION_MAJOR`: set the the GL major version number to request
-* `GH_FORCE_GL_VERSION_MINOR`: set the the GL minor version number to request
+* `GH_FORCE_MIN_GL_VERSION_MAJOR`: set the the minimum GL major version number to request
+* `GH_FORCE_MIN_GL_VERSION_MINOR`: set the the minimum GL minor version number to request
+* `GH_FORCE_MAX_GL_VERSION_MAJOR`: set the the maximum GL major version number to request
+* `GH_FORCE_MAX_GL_VERSION_MINOR`: set the the maximum GL minor version number to request
+* `GH_FORCE_GL_VERSION_MAJOR`: set the the exact GL major version number to request
+* `GH_FORCE_GL_VERSION_MINOR`: set the the exact GL minor version number to request
 * `GH_FORCE_GL_CONTEXT_PROFILE_CORE`: set to non-zero to force the creation of a core profile. (Requires GL version of at least 3.2)
-* `GH_FORCE_GL_CONTEXT_PROFILE_COMPAT`: set to non-zero to force the creation of a compat profile profile. (Requires GL version of at least 3.2)
+* `GH_FORCE_GL_CONTEXT_PROFILE_COMPAT`: set to non-zero to force the creation of a compat profile. (Requires GL version of at least 3.2). Set to 1 to always force compat, and to 2 only if the app would be using legacy instead.
 * `GH_FORCE_GL_CONTEXT_FLAGS_NO_DEBUG`: set to non-zero to disable debug contexts.
 * `GH_FORCE_GL_CONTEXT_FLAGS_DEBUG`: set to non-zero to force debug contexts. `GH_FORCE_GL_CONTEXT_FLAGS_DEBUG` takes precedence over `GH_FORCE_GL_CONTEXT_FLAGS_NO_DEBUG`.
 * `GH_FORCE_GL_CONTEXT_FLAGS_NO_FORWARD_COMPAT`: set to non-zero to disable forwadr-compatible contexts.
 * `GH_FORCE_GL_CONTEXT_FLAGS_FORWARD_COMPAT`: set to non-zero to force forward-compatible contexts. `GH_FORCE_GL_CONTEXT_FLAGS_FORWARD_COMPAT` takes precedence over `GH_FORCE_GL_CONTEXT_FLAGS_NO_FORWARD_COMPAT`.
+
+The GL version overrides are applied in the order `min,max,exact`. Set a component to `-1` for no override.
+Note: it is advised to set both the major and minor version, the version comparision will then take
+both major and minor into account (e.g. a minumium of 3.2 will not change a requested 4.0 to 4.2),
+but it is also possible to override only one component if you really want to (e.g. a minimum of -1.2 will
+change a requested 4.0 to 4.2).
 
 You can also directly specify the bitmasks for the context flags and profile mask (see the various `GLX` context creation extensions for the actual values):
 * `GH_FORCE_GL_CONTEXT_FLAGS_ON` manaully specify a the bits which must be forced on in the context flags bitmask.
@@ -204,15 +214,19 @@ You can also directly specify the bitmasks for the context flags and profile mas
 When setting these, they will override any settings by the other `GL_FORCE_GL_*` environment variables.
 
 Note that the context profile is only relevant for GL version 3.2 and up. When forcing a GL version
-of 3.2 or higher, the default profile is the core profile. YOu must explicitely request a compat profile
+of 3.2 or higher, the default profile is the core profile. You must explicitely request a compat profile
 if the application would otherwise work with a leagcy context (by not using `GLX_ARB_create_context` or
-specifying an earlier version).
+specifying an earlier version), or use `GH_FORCE_GL_CONTEXT_PROFILE_COMPAT=2` to dynamically request
+compatibility profile only if legacy profiles were requested.
 
 #### GL Debug Output
 
 By setting `GH_GL_DEBUG_OUTPUT` to a non-zero value, [GL debug output](https://www.khronos.org/registry/OpenGL/extensions/ARB/ARB_debug_output.txt) message callbacks will be intercepted. The debug messages will be logged as `INFO` level messages in the GH log. Set `GH_GL_INJECT_DEBUG_OUTPUT` to a non-zero value to inject a call to the
 debug output functionality into the application. Note that to get debug output, you must
 force the creation of a debug GL context if the app does not do it on its own.
+
+See the example script [`setup_env_debug`](https://github.com/derhass/glx_hook/blob/master/setup_env_debug)
+for a setup which tries to inject Debug Output into an unspecified GL app.
 
 ### FILE NAMES
 
@@ -241,6 +255,16 @@ be called. Tested with glibc-2.13 (from debian wheezy), glibc-2.24
 Finally copy the `glx_hook.so` to where you like it. For a debug build, do
 
     $ make DEBUG=1
+
+### Examples
+
+There are some example scripts to simplify the setup:
+* [`setup_env`](https://github.com/derhass/glx_hook/blob/master/setup_env)
+* [`setup_env_debug`](https://github.com/derhass/glx_hook/blob/master/setup_env_debug)
+
+Use either of these to set up your current shell's environment for the use of `glx_hook.so`:
+* `cd /path/to/your/glx_hook/installation; source ./setup_env` (assumes the `setup.env` and the `glx_hook.so` are in the same directory)
+* `source /path/to/your/glx_hook/scripts/setup_env /path/to/your/glx_hook/installation` (directories might differ)
 
 Have fun,
      derhass <derhass@arcor.de>

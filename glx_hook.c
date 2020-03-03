@@ -820,6 +820,8 @@ typedef struct gl_context_ceation_opts_s {
 	pthread_mutex_t mutex;
 	unsigned int flags;
 	int force_version[2];
+	int force_version_min[2];
+	int force_version_max[2];
 	int force_flags_on;
 	int force_flags_off;
 	int force_profile_on;
@@ -828,6 +830,7 @@ typedef struct gl_context_ceation_opts_s {
 
 /* flag bits */
 #define GH_GLCTX_CREATE_INITIALIZED	0x1
+#define GH_GLCTX_COMPAT_IF_LEGACY	0x2
 
 typedef struct gl_context_s {
 	GLXContext ctx;
@@ -858,6 +861,8 @@ static gl_context_creation_opts_t ctx_creation_opts = {
 	.mutex = PTHREAD_MUTEX_INITIALIZER,
 	.flags = 0,
 	.force_version = {-1, -1},
+	.force_version_min = {-1, -1},
+	.force_version_max = {-1, -1},
 	.force_flags_on = 0,
 	.force_flags_off = 0,
 	.force_profile_on = 0,
@@ -1281,29 +1286,38 @@ GH_debug_callback_AMD(GLuint id, GLenum category, GLenum severity,
 static void context_creation_opts_init(gl_context_creation_opts_t *opts)
 {
 	if (get_envi("GH_FORCE_GL_CONTEXT_PROFILE_CORE", 0)) {
-		opts->force_profile_on = 0x1;
-		opts->force_profile_off = 0x2;
+		opts->force_profile_on = GLX_CONTEXT_CORE_PROFILE_BIT_ARB;
+		opts->force_profile_off = GLX_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB;
 	}
-	if (get_envi("GH_FORCE_GL_CONTEXT_PROFILE_COMPAT", 0)) {
-		opts->force_profile_on = 0x2;
-		opts->force_profile_off = 0x1;
+
+	int value = get_envi("GH_FORCE_GL_CONTEXT_PROFILE_COMPAT", 0);
+	if (value == 1) {
+		opts->force_profile_on = GLX_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB;
+		opts->force_profile_off = GLX_CONTEXT_CORE_PROFILE_BIT_ARB;
+	} else if (value == 2) {
+		opts->flags |= GH_GLCTX_COMPAT_IF_LEGACY;
 	}
 	if (get_envi("GH_FORCE_GL_CONTEXT_FLAGS_NO_FORWARD_COMPAT", 0)) {
-		opts->force_flags_off = 0x2;
+		opts->force_flags_off = GLX_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB;
 	}
 	if (get_envi("GH_FORCE_GL_CONTEXT_FLAGS_NO_DEBUG", 0)) {
-		opts->force_flags_off = 0x1;
+		opts->force_flags_off = GLX_CONTEXT_DEBUG_BIT_ARB;
 	}
 	if (get_envi("GH_FORCE_GL_CONTEXT_FLAGS_FORWARD_COMPAT", 0)) {
-		opts->force_flags_on = 0x2;
+		opts->force_flags_on = GLX_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB;
 	}
 	if (get_envi("GH_FORCE_GL_CONTEXT_FLAGS_DEBUG", 0)) {
-		opts->force_flags_on = 0x1;
+		opts->force_flags_on = GLX_CONTEXT_DEBUG_BIT_ARB;
 	}
 
 	opts->force_version[0] = get_envi("GH_FORCE_GL_VERSION_MAJOR", opts->force_version[0]);
 	opts->force_version[1] = get_envi("GH_FORCE_GL_VERSION_MINOR", opts->force_version[1]);
 
+	opts->force_version_min[0] = get_envi("GH_FORCE_MIN_GL_VERSION_MAJOR", opts->force_version_min[0]);
+	opts->force_version_min[1] = get_envi("GH_FORCE_MIN_GL_VERSION_MINOR", opts->force_version_min[1]);
+
+	opts->force_version_max[0] = get_envi("GH_FORCE_MAX_GL_VERSION_MAJOR", opts->force_version_max[0]);
+	opts->force_version_max[1] = get_envi("GH_FORCE_MAX_GL_VERSION_MINOR", opts->force_version_max[1]);
 	
 	opts->force_flags_on = get_envi("GH_FORCE_GL_CONTEXT_FLAGS_ON", opts->force_flags_on);
 	opts->force_flags_off = get_envi("GH_FORCE_GL_CONTEXT_FLAGS_OFF", opts->force_flags_off);
@@ -1314,7 +1328,13 @@ static void context_creation_opts_init(gl_context_creation_opts_t *opts)
 
 static int need_creation_override(const gl_context_creation_opts_t *opts)
 {
-	if (opts->force_version[0] > 0) {
+	if (opts->force_version[0] >= 0 || opts->force_version[1] >= 0) {
+		return 1;
+	}
+	if (opts->force_version_min[0] >= 0 || opts->force_version_min[1] >= 0) {
+		return 1;
+	}
+	if (opts->force_version_max[0] >= 0 || opts->force_version_max[1] >= 0) {
 		return 1;
 	}
 	if (opts->force_flags_on || opts->force_flags_off) {
@@ -1333,8 +1353,9 @@ static int* get_override_attributes(gl_context_creation_opts_t *opts, const int 
 	int count = 0;
 	int additional_count = 0;
 	int req_version[2] = {1,0};
-	int req_profile_mask = 0x1; /* Core Profile */
+	int req_profile_mask = GLX_CONTEXT_CORE_PROFILE_BIT_ARB;
 	int req_flags = 0;
+	int legacy = 0;
 	int *attr_override;
 	int pos=0;
 	int i;
@@ -1365,7 +1386,70 @@ static int* get_override_attributes(gl_context_creation_opts_t *opts, const int 
 		}
 	}
 
-	if (opts->force_version[0] > 0) {
+	legacy = ((req_version[0] < 3) || ( (req_version[0] == 3) && req_version[1] < 2) );
+	if (legacy && (opts->flags & GH_GLCTX_COMPAT_IF_LEGACY)) {
+		GH_verbose(GH_MSG_INFO, "overriding legacy context to compat profile\n");
+		req_profile_mask &= ~GLX_CONTEXT_CORE_PROFILE_BIT_ARB;
+		req_profile_mask |= GLX_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB;
+	}
+
+	if (opts->force_version_min[0] >= 0) {
+		if (req_version[0] < opts->force_version_min[0]) {
+			GH_verbose(GH_MSG_INFO, "overriding context major version from %d to %d [min]\n",
+				   req_version[0], opts->force_version_min[0]);
+			req_version[0] = opts->force_version_min[0];
+		}
+	}
+	if (opts->force_version_min[1] >= 0) {
+		int override=0;
+		if (opts->force_version_min[0] >= 0) {
+			if (req_version[0] <= opts->force_version_min[0]) {
+				if (req_version[1] < opts->force_version_min[1]) {
+					override = 1;
+				}
+			}
+		} else {
+			if (req_version[1] < opts->force_version_min[1]) {
+				override = 1;
+			}
+		}
+
+		if (override) {
+			GH_verbose(GH_MSG_INFO, "overriding context minor version from %d to %d [min]\n",
+				   req_version[1], opts->force_version_min[1]);
+			req_version[1] = opts->force_version_min[1];
+		}
+	}
+
+	if (opts->force_version_max[0] >= 0) {
+		if (req_version[0] > opts->force_version_max[0]) {
+			GH_verbose(GH_MSG_INFO, "overriding context major version from %d to %d [max]\n",
+				   req_version[0], opts->force_version_max[0]);
+			req_version[0] = opts->force_version_max[0];
+		}
+	}
+	if (opts->force_version_max[1] >= 0) {
+		int override=0;
+		if (opts->force_version_max[0] >= 0) {
+			if (req_version[0] >= opts->force_version_max[0]) {
+				if (req_version[1] > opts->force_version_max[1]) {
+					override = 1;
+				}
+			}
+		} else {
+			if (req_version[1] > opts->force_version_max[1]) {
+				override = 1;
+			}
+		}
+
+		if (override) {
+			GH_verbose(GH_MSG_INFO, "overriding context minor version from %d to %d [max]\n",
+				   req_version[1], opts->force_version_max[1]);
+			req_version[1] = opts->force_version_max[1];
+		}
+	}
+
+	if (opts->force_version[0] >= 0) {
 		GH_verbose(GH_MSG_INFO, "overriding context major version from %d to %d\n",
 			   req_version[0], opts->force_version[0]);
 		req_version[0] = opts->force_version[0];
@@ -1393,6 +1477,8 @@ static int* get_override_attributes(gl_context_creation_opts_t *opts, const int 
 		return NULL;
 	}
 
+	GH_verbose(GH_MSG_INFO, "requesting GL %d.%d flags: 0x%x, profile: 0x%x\n",
+		   req_version[0], req_version[1], (unsigned)req_flags, (unsigned)req_profile_mask);
 	attr_override[pos++] = GLX_CONTEXT_MAJOR_VERSION_ARB;
 	attr_override[pos++] = req_version[0];
 	attr_override[pos++] = GLX_CONTEXT_MINOR_VERSION_ARB;
