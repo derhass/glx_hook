@@ -256,7 +256,7 @@ Finally copy the `glx_hook.so` to where you like it. For a debug build, do
 
     $ make DEBUG=1
 
-### Examples
+### EXAMPLES
 
 There are some example scripts to simplify the setup:
 * [`setup_env`](https://github.com/derhass/glx_hook/blob/master/setup_env)
@@ -267,5 +267,6 @@ Use either of these to set up your current shell's environment for the use of `g
 * `source /path/to/your/glx_hook/scripts/setup_env /path/to/your/glx_hook/installation` (directories might differ)
 
 Have fun,
-     derhass <derhass@arcor.de>
+     derhass
+     (<derhass@arcor.de>)
 
