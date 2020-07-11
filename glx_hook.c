@@ -12,6 +12,7 @@
 
 #include <GL/glx.h>
 #include <GL/glxext.h>
+#include <math.h>
 
 #ifdef GH_CONTEXT_TRACKING
 #include <time.h>	/* for clock_gettime */
@@ -260,6 +261,13 @@ static void (* volatile GH_glDebugMessageCallback)(GLDEBUGPROC, const GLvoid*);
 static void (* volatile GH_glDebugMessageCallbackARB)(GLDEBUGPROC, const GLvoid*);
 static void (* volatile GH_glDebugMessageCallbackKHR)(GLDEBUGPROC, const GLvoid*);
 static void (* volatile GH_glDebugMessageCallbackAMD)(GLDEBUGPROCAMD, GLvoid*);
+
+static void (* volatile GH_glTexParameteri)(GLenum, GLenum, GLint);
+static void (* volatile GH_glTexParameterf)(GLenum, GLenum, GLfloat);
+static void (* volatile GH_glGenerateMipmap)(GLenum);
+static void (* volatile GH_glTexStorage2D)(GLenum, GLsizei, GLenum, GLsizei, GLsizei);
+static void (* volatile GH_glTexSubImage2D)(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, const GLvoid * pixels);
+static void (* volatile GH_glTexImage2D)(GLenum target, GLint level,  GLint internalFormat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, const GLvoid * data);
 
 /* function pointers we just might qeury */
 static void (* volatile GH_glFlush)(void);
@@ -2173,6 +2181,102 @@ extern void glXSwapBuffers(Display *dpy, GLXDrawable drawable)
 }
 #endif /* GH_SWAPBUFFERS_INTERCEPT */
 
+/* ---------- Tex Parameter ---------- */
+
+
+/* EVIL HACK, do not use this version!!!! */
+
+static GLint base_level = 1;
+
+extern void glTexParameteri(GLenum target, GLenum pname, GLint param)
+{
+	GH_GET_PTR_GL(glTexParameteri);
+	if (pname == GL_TEXTURE_MIN_LOD || pname == GL_TEXTURE_MAX_LOD) {
+		GH_glTexParameteri(target, GL_TEXTURE_MIN_LOD, base_level);
+		GH_glTexParameteri(target, GL_TEXTURE_MAX_LOD, base_level);
+		return;
+	}
+	if (pname == GL_TEXTURE_MIN_FILTER) {
+		param = GL_NEAREST_MIPMAP_NEAREST;
+		GH_glTexParameteri(target, GL_TEXTURE_MIN_LOD, base_level);
+		GH_glTexParameteri(target, GL_TEXTURE_MAX_LOD, base_level);
+	
+	} else if( pname == GL_TEXTURE_MAG_FILTER) {
+		param = GL_NEAREST;
+		GH_glTexParameteri(target, GL_TEXTURE_MIN_LOD, base_level);
+		GH_glTexParameteri(target, GL_TEXTURE_MAX_LOD, base_level);
+	}
+	GH_glTexParameteri(target, pname, param);
+}
+
+extern void glTexParameterf(GLenum target, GLenum pname, GLfloat param)
+{
+	GH_GET_PTR_GL(glTexParameterf);
+	if (pname == GL_TEXTURE_MIN_LOD || pname == GL_TEXTURE_MAX_LOD) {
+		GH_glTexParameterf(target, GL_TEXTURE_MIN_LOD, base_level);
+		GH_glTexParameterf(target, GL_TEXTURE_MAX_LOD, base_level);
+		return;
+	}
+	if (pname == GL_TEXTURE_MIN_FILTER) {
+		param = GL_NEAREST_MIPMAP_NEAREST;
+		GH_glTexParameterf(target, GL_TEXTURE_MIN_LOD, base_level);
+		GH_glTexParameterf(target, GL_TEXTURE_MAX_LOD, base_level);
+	
+	} else if( pname == GL_TEXTURE_MAG_FILTER) {
+		param = (GLfloat)GL_NEAREST;
+		GH_glTexParameterf(target, GL_TEXTURE_MIN_LOD, base_level);
+	}
+	GH_glTexParameterf(target, pname, param);
+}
+
+/* EVEN MORE EVIL HACK, doesn't even work as intended...
+extern void glTexStorage2D(GLenum target, GLsizei levels, GLenum internalformat, GLsizei width, GLsizei height)
+{
+	GH_GET_PTR_GL(glTexStorage2D);
+	if (width == 256 && height == 256) {
+		int maxLevelW = (int)log2(width);
+		int maxLevelH = (int)log2(height);
+		if (maxLevelW < maxLevelH) { maxLevelW = maxLevelH;}
+		if (levels < base_level+1) {
+			levels = base_level + 1;
+			if (levels > maxLevelW) {
+				levels = maxLevelW;
+			}
+		}
+	}
+	GH_glTexStorage2D(target, levels, internalformat, width, height);
+}
+
+extern void glTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, const GLvoid * pixels)
+{
+	GH_GET_PTR_GL(glTexSubImage2D);
+	GH_GET_PTR_GL(glGenerateMipmap);
+	GH_GET_PTR_GL(glTexParameteri);
+	GH_glTexSubImage2D(target, level, xoffset, yoffset, width, height, format, type, pixels);
+
+	if (width == 256 && height == 256 && level == 0) {
+		GH_glTexParameteri(target, GL_TEXTURE_BASE_LEVEL, 0);
+		GH_glGenerateMipmap(target);
+		GH_glTexParameteri(target, GL_TEXTURE_BASE_LEVEL, base_level);
+	}
+}
+
+extern void glTexImage2D(GLenum target, GLint level,  GLint internalFormat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, const GLvoid * data)
+{
+	GH_GET_PTR_GL(glTexImage2D);
+	GH_GET_PTR_GL(glGenerateMipmap);
+	GH_GET_PTR_GL(glTexParameteri);
+	GH_glTexImage2D(target, level, internalFormat, width, height, border, format, type, data);
+
+	if (width == 256 && height == 256 && level == 0) {
+		GH_glTexParameteri(target, GL_TEXTURE_BASE_LEVEL, 0);
+		GH_glGenerateMipmap(target);
+		GH_glTexParameteri(target, GL_TEXTURE_BASE_LEVEL, base_level);
+	}
+}
+
+*/
+
 /***************************************************************************
  * LIST OF INTERCEPTED FUNCTIONS                                           *
  ***************************************************************************/
@@ -2226,6 +2330,13 @@ static void* GH_get_interceptor(const char *name, GH_resolve_func query,
 	GH_INTERCEPT(glDebugMessageCallbackARB);
 	GH_INTERCEPT(glDebugMessageCallbackKHR);
 	GH_INTERCEPT(glDebugMessageCallbackAMD);
+	GH_INTERCEPT(glTexParameteri);
+	GH_INTERCEPT(glTexParameterf);
+	/*
+	GH_INTERCEPT(glTexStorage2D);
+	GH_INTERCEPT(glTexSubImage2D);
+	GH_INTERCEPT(glTexImage2D);
+	*/
 #endif
 #ifdef GH_SWAPBUFFERS_INTERCEPT
 	if (do_swapbuffers) {
