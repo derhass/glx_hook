@@ -179,8 +179,8 @@ modes are implemented:
 The mode is selected by setting `GH_LATENCY_MANUAL_WAIT=$n`, where `$n` is
 * `-1`: automatic mode selecion  (the default):  enable manual mode if either of `GH_LATENCY_GL_WAIT_USECS` or `GH_LATENCY_WAIT_USECS`
 is set to a non-zero value
-* '0': always use standard mode
-* '1`: always use manual mode (this allows explicit busy waiting by setting both wait usecs to 0)
+* `0`: always use standard mode
+* `1`: always use manual mode (this allows explicit busy waiting by setting both wait usecs to 0)
 
 #### Buffer Swap Omission
 
