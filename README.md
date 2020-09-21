@@ -161,12 +161,24 @@ This can be helpful in situations where you experience stuttering in a GL applic
 you should use `GH_LATENCY=1` to not degrade performance too much.
 
 Some GL drivers may use busy waiting when waiting for the sync objects, resulting
-in maxing out one CPU core for nothing. If this is an issue, you can try setting
-`GH_LATENCY_WAIT_USECS` to some value > 0. This will disbale waiting for the
-completion of the sync object directly and instead use a loop to query the
-completion status, and add a sleep cycle for that many microseconds wheever the
-sync object was found not completed. Useful values should be in the range
-of 100 to 2000 usecs, but even setting it to 1 may have some effect.
+in maxing out one CPU core for only very little of an advantage. However, sometimes you might
+even want to use busy waiting (even if the driver doesn't do it for you). Two different
+modes are implemented:
+* the _standard_ mode, which uses a single call to `glClientWaitSync`,
+  which wait for either the completion of rendering of the relevant frame, or the reaching of
+  a timeout, whatever comes first. The timeout can be specified by setting
+  `GH_LATENCY_GL_WAIT_TIMEOUT_USECS=$n`, where `$n` is the timeout in microseconds. Default is
+  `1000000` (1 second), but you can turn this down significantly if you don't wait for
+  long periods even in extreme cases. Setting this too low might result in not actually
+  full synchronization.
+* the _manual_ mode, where the wait is performed in a loop, until synchronization is
+  achieved. Use `GH_LATENCY_GL_WAIT_USECS=$n` to set the wait timeout for each individual
+  GL wait operation to `$n` microseconds (default: 0) and `GH_LATENCY_WAIT_USECS=$n`
+  to add an additional _sleep_ cycle of `$n` microseconds per loop iteration (default: 0).
+
+Manual mode is selected when either of `GH_LATENCY_GL_WAIT_USECS` or `GH_LATENCY_WAIT_USECS`
+is set to a non-zero value, or when explicitly requested by setting `GH_LATENCY_FORCE_MANUAL_WAIT`
+to a non-zero value (default is 0, obviously).
 
 #### Buffer Swap Omission
 
