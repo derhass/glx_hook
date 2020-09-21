@@ -423,7 +423,7 @@ latency_gl_init()
 }
 
 static void
-latency_init(GH_latency *lat, int latency, unsigned int force_manual_wait, unsigned gl_wait_timeout_usecs, unsigned int gl_wait_interval_usecs, unsigned int self_wait_interval_usecs)
+latency_init(GH_latency *lat, int latency, int manual_wait, unsigned gl_wait_timeout_usecs, unsigned int gl_wait_interval_usecs, unsigned int self_wait_interval_usecs)
 {
 	lat->latency=latency;
 	lat->sync_object=NULL;
@@ -433,8 +433,12 @@ latency_init(GH_latency *lat, int latency, unsigned int force_manual_wait, unsig
 	lat->gl_wait_interval=(GLuint64)gl_wait_interval_usecs * (GLuint64)1000;
 	lat->self_wait_interval=(useconds_t)self_wait_interval_usecs;
 
-	if ((gl_wait_interval_usecs > 0) || (self_wait_interval_usecs > 0) || (force_manual_wait > 0))  {
+	if (manual_wait > 0) {
 		lat->flags |= GH_LATENCY_FLAG_MANUAL_WAIT;
+	} else if (manual_wait < 0) {
+		if ((gl_wait_interval_usecs > 0) || (self_wait_interval_usecs > 0))  {
+			lat->flags |= GH_LATENCY_FLAG_MANUAL_WAIT;
+		}
 	}
 
 	if (latency != GH_LATENCY_NOP) {
@@ -1073,7 +1077,7 @@ make_current(GLXContext ctx, Display *dpy, GLXDrawable draw, GLXDrawable read)
 				unsigned int ft_frames=get_envui("GH_FRAMETIME_FRAMES", 1000);
 				GH_frametime_mode ft_mode=(GH_frametime_mode)get_envi("GH_FRAMETIME", (int)GH_FRAMETIME_NONE);
 				int latency=get_envi("GH_LATENCY", GH_LATENCY_NOP);
-				unsigned int latency_force_manual_wait=get_envui("GH_LATENCY_FORCE_MANUAL_WAIT", 0);
+				int latency_manual_wait=get_envi("GH_LATENCY_MANUAL_WAIT", -1);
 				unsigned int latency_gl_wait_timeout=get_envui("GH_LATENCY_GL_WAIT_TIMEOUT_USECS", 1000000);
 				unsigned int latency_gl_wait_interval=get_envui("GH_LATENCY_GL_WAIT_USECS", 0);
 				unsigned int latency_self_wait_interval=get_envui("GH_LATENCY_WAIT_USECS", 0);
@@ -1083,7 +1087,7 @@ make_current(GLXContext ctx, Display *dpy, GLXDrawable draw, GLXDrawable read)
 				glc->swap_sleep_usecs=(useconds_t)get_envui("GH_SWAP_SLEEP_USECS",0);
 				frametimes_init(&glc->frametimes, ft_mode, ft_delay, GH_FRAMETIME_COUNT, ft_frames, glc->num);
 				frametimes_init_base(&glc->frametimes);
-				latency_init(&glc->latency, latency, latency_force_manual_wait, latency_gl_wait_timeout, latency_gl_wait_interval, latency_self_wait_interval);
+				latency_init(&glc->latency, latency, latency_manual_wait, latency_gl_wait_timeout, latency_gl_wait_interval, latency_self_wait_interval);
 				if (glc->inject_swapinterval != GH_SWAP_DONT_SET) {
 					GH_GET_PTR_GL(glXSwapIntervalEXT);
 					if (GH_glXSwapIntervalEXT) {
