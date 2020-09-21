@@ -200,8 +200,17 @@ static pthread_mutex_t GH_mutex=PTHREAD_MUTEX_INITIALIZER;
  * so it is safe to dereference them without locking */
 static pthread_mutex_t GH_fptr_mutex=PTHREAD_MUTEX_INITIALIZER;
 
-/* THIS IS AN EVIL HACK: we directly call _dl_sym() of the glibc */
-extern void *_dl_sym(void *, const char *, void (*)() );
+/* THIS IS AN EVIL HACK: we directly call _dl_sym() of the glibc
+ * NOTE: the approrpiate function prototype could be
+ *       extern void *_dl_sym(void *, const char *, void (*)() );
+ *       but we use it only with some specific argument for the
+ *       last parameter, and use the function pointer type
+ *       directly in this declaration, which avoids us to do a
+ *       cast between (technically incompatible) function pointer
+ *       types. Hiding the cast in the declatation is of course
+ *       as broken as before from a C correctness point of view,
+ *       but the compiler won't notice any more... ;) */
+extern void *_dl_sym(void *, const char *, void* (*)(void *, const char *) );
 
 /* Wrapper function called in place of dlsym(), since we intercept dlsym().
  * We use this ONLY to get the original dlsym() itself, all other symbol
@@ -220,7 +229,7 @@ static void *GH_dlsym_internal(void *handle, const char *name)
 	 * wrapper function itself, which is wrong when this is called on
 	 * behalf of the real application doing a dlsycm, but we do not
 	 *  care... */
-	ptr=_dl_sym(handle, name, (void (*)())GH_dlsym_internal);
+	ptr=_dl_sym(handle, name, GH_dlsym_internal);
 
 	pthread_mutex_unlock(&GH_mutex);
 	return ptr;
