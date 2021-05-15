@@ -289,6 +289,9 @@ static PFNGLFENCESYNCPROC GH_glFenceSync=NULL;
 static PFNGLDELETESYNCPROC GH_glDeleteSync=NULL;
 static PFNGLCLIENTWAITSYNCPROC GH_glClientWaitSync=NULL;
 #endif /* GH_CONTEXT_TRACKING */
+typedef void (APIENTRYP PFNGLTEXSUBIMAGE2DPROC) (GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, const GLvoid *pixels);
+static PFNGLTEXSUBIMAGE2DPROC GH_glTexSubImage2D=NULL;
+static PFNGLMAPBUFFERRANGEPROC GH_glMapBufferRange=NULL;
 
 /* Resolve an unintercepted symbol via the original dlsym() */
 static void *GH_dlsym_next(const char *name)
@@ -2119,6 +2122,30 @@ extern void glDebugMessageCallbackAMD(GLDEBUGPROCAMD proc, GLvoid *user_ptr)
 
 #endif /* GH_CONTEXT_TRACKING */
 
+extern void glTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, const GLvoid *ptr)
+{
+	(void)target;
+	(void)level;
+	(void)xoffset;
+	(void)yoffset;
+	(void)width;
+	(void)height;
+	(void)format;
+	(void)type;
+	(void)ptr;
+}
+
+extern void* glMapBufferRange(GLenum target, GLintptr offset, GLsizeiptr length, GLbitfield access)
+{
+	(void)target;
+	(void)offset;
+	(void)length;
+	(void)access;
+
+	return malloc(length);
+}
+
+
 /* ---------- Swap Interval---------- */
 
 extern void glXSwapIntervalEXT(Display *dpy, GLXDrawable drawable,
@@ -2262,6 +2289,8 @@ static void* GH_get_interceptor(const char *name, GH_resolve_func query,
 	GH_INTERCEPT(glDebugMessageCallbackKHR);
 	GH_INTERCEPT(glDebugMessageCallbackAMD);
 #endif
+	GH_INTERCEPT(glTexSubImage2D);
+	GH_INTERCEPT(glMapBufferRange);
 #ifdef GH_SWAPBUFFERS_INTERCEPT
 	if (do_swapbuffers) {
 		if (do_swapbuffers < 0) {
