@@ -201,8 +201,17 @@ static pthread_mutex_t GH_mutex=PTHREAD_MUTEX_INITIALIZER;
  * so it is safe to dereference them without locking */
 static pthread_mutex_t GH_fptr_mutex=PTHREAD_MUTEX_INITIALIZER;
 
-/* THIS IS AN EVIL HACK: we directly call _dl_sym() of the glibc */
-extern void *_dl_sym(void *, const char *, void (*)() );
+/* THIS IS AN EVIL HACK: we directly call _dl_sym() of the glibc
+ * NOTE: the approrpiate function prototype could be
+ *       extern void *_dl_sym(void *, const char *, void (*)() );
+ *       but we use it only with some specific argument for the
+ *       last parameter, and use the function pointer type
+ *       directly in this declaration, which avoids us to do a
+ *       cast between (technically incompatible) function pointer
+ *       types. Hiding the cast in the declatation is of course
+ *       as broken as before from a C correctness point of view,
+ *       but the compiler won't notice any more... ;) */
+extern void *_dl_sym(void *, const char *, void* (*)(void *, const char *) );
 
 /* Wrapper function called in place of dlsym(), since we intercept dlsym().
  * We use this ONLY to get the original dlsym() itself, all other symbol
@@ -221,7 +230,7 @@ static void *GH_dlsym_internal(void *handle, const char *name)
 	 * wrapper function itself, which is wrong when this is called on
 	 * behalf of the real application doing a dlsycm, but we do not
 	 *  care... */
-	ptr=_dl_sym(handle, name, (void (*)())GH_dlsym_internal);
+	ptr=_dl_sym(handle, name, GH_dlsym_internal);
 
 	pthread_mutex_unlock(&GH_mutex);
 	return ptr;
@@ -403,9 +412,14 @@ typedef struct {
 	int latency;
 	GLsync *sync_object;
 	unsigned int cur_pos;
-	GLuint64 wait_timeout;
-	useconds_t wait_interval;
+	unsigned int flags;
+	GLuint64 gl_wait_timeout;
+	GLuint64 gl_wait_interval;
+	useconds_t self_wait_interval;
 } GH_latency;
+
+/* latency flags */
+#define GH_LATENCY_FLAG_MANUAL_WAIT	0x1
 
 static int
 latency_gl_init()
@@ -417,17 +431,26 @@ latency_gl_init()
 }
 
 static void
-latency_init(GH_latency *lat, int latency, unsigned int wait_interval)
+latency_init(GH_latency *lat, int latency, int manual_wait, unsigned gl_wait_timeout_usecs, unsigned int gl_wait_interval_usecs, unsigned int self_wait_interval_usecs)
 {
 	lat->latency=latency;
 	lat->sync_object=NULL;
 	lat->cur_pos=0;
-	lat->wait_timeout=1*1000000000; /* 1 second */
-	lat->wait_interval=(useconds_t)wait_interval;
+	lat->flags=0;
+	lat->gl_wait_timeout=(GLuint64)gl_wait_timeout_usecs * (GLuint64)1000;
+	lat->gl_wait_interval=(GLuint64)gl_wait_interval_usecs * (GLuint64)1000;
+	lat->self_wait_interval=(useconds_t)self_wait_interval_usecs;
+
+	if (manual_wait > 0) {
+		lat->flags |= GH_LATENCY_FLAG_MANUAL_WAIT;
+	} else if (manual_wait < 0) {
+		if ((gl_wait_interval_usecs > 0) || (self_wait_interval_usecs > 0))  {
+			lat->flags |= GH_LATENCY_FLAG_MANUAL_WAIT;
+		}
+	}
 
 	if (latency != GH_LATENCY_NOP) {
-		GH_verbose(GH_MSG_INFO, "setting up latency limiter mode %d with  wait_interval %uusecs\n",
-				latency, wait_interval);
+		GH_verbose(GH_MSG_INFO, "setting up latency limiter mode %d\n", latency);
 	}
 
 	if (latency > 0) {
@@ -450,6 +473,13 @@ latency_init(GH_latency *lat, int latency, unsigned int wait_interval)
 				lat->sync_object[i]=NULL;
 			}
 			GH_verbose(GH_MSG_DEBUG, "enabling latency limiter: %d\n",lat->latency);
+			if (lat->flags & GH_LATENCY_FLAG_MANUAL_WAIT) {
+				GH_verbose(GH_MSG_INFO, "latency limiter with manual waits GL: %u usecs + self: %u usecs\n",
+						gl_wait_interval_usecs, self_wait_interval_usecs);
+			} else {
+				GH_verbose(GH_MSG_INFO, "latency limiter with timeout: %u usecs\n",
+						gl_wait_timeout_usecs);
+			}
 		}
 	}
 }
@@ -484,14 +514,16 @@ latency_before_swap(GH_latency *lat)
 			break;
 		default:
 			if ( (sync=lat->sync_object[lat->cur_pos]) ) {
-				if (lat->wait_interval) {
+				if (lat->flags & GH_LATENCY_FLAG_MANUAL_WAIT) {
 					/* check for the fence in a loop */
-					while(GH_glClientWaitSync(sync, GL_SYNC_FLUSH_COMMANDS_BIT, 0) == GL_TIMEOUT_EXPIRED) {
-						usleep(lat->wait_interval);
+					while(GH_glClientWaitSync(sync, GL_SYNC_FLUSH_COMMANDS_BIT, lat->gl_wait_interval) == GL_TIMEOUT_EXPIRED) {
+						if (lat->self_wait_interval) {
+							usleep(lat->self_wait_interval);
+						}
 					}
 				} else {
 					/* just wait for the fence */
-					GH_glClientWaitSync(sync, GL_SYNC_FLUSH_COMMANDS_BIT, lat->wait_timeout);
+					GH_glClientWaitSync(sync, GL_SYNC_FLUSH_COMMANDS_BIT, lat->gl_wait_timeout);
 					/* NOTE: we do not care about the result */
 				}
 			}
@@ -920,7 +952,7 @@ create_ctx(GLXContext ctx, unsigned int num)
 
 		glc->swap_sleep_usecs=0;
 		frametimes_init(&glc->frametimes, GH_FRAMETIME_NONE, 0, 0, 0, num);
-		latency_init(&glc->latency, GH_LATENCY_NOP, 0);
+		latency_init(&glc->latency, GH_LATENCY_NOP, 0, 1000000, 0, 0);
 	}
 	return glc;
 }
@@ -1053,14 +1085,17 @@ make_current(GLXContext ctx, Display *dpy, GLXDrawable draw, GLXDrawable read)
 				unsigned int ft_frames=get_envui("GH_FRAMETIME_FRAMES", 1000);
 				GH_frametime_mode ft_mode=(GH_frametime_mode)get_envi("GH_FRAMETIME", (int)GH_FRAMETIME_NONE);
 				int latency=get_envi("GH_LATENCY", GH_LATENCY_NOP);
-				unsigned int latency_wait_interval=get_envui("GH_LATENCY_WAIT_USECS", 0);
+				int latency_manual_wait=get_envi("GH_LATENCY_MANUAL_WAIT", -1);
+				unsigned int latency_gl_wait_timeout=get_envui("GH_LATENCY_GL_WAIT_TIMEOUT_USECS", 1000000);
+				unsigned int latency_gl_wait_interval=get_envui("GH_LATENCY_GL_WAIT_USECS", 0);
+				unsigned int latency_self_wait_interval=get_envui("GH_LATENCY_WAIT_USECS", 0);
 				/* made current for the first time */
 				glc->flags &= ~ GH_GL_NEVER_CURRENT;
 
 				glc->swap_sleep_usecs=(useconds_t)get_envui("GH_SWAP_SLEEP_USECS",0);
 				frametimes_init(&glc->frametimes, ft_mode, ft_delay, GH_FRAMETIME_COUNT, ft_frames, glc->num);
 				frametimes_init_base(&glc->frametimes);
-				latency_init(&glc->latency, latency, latency_wait_interval);
+				latency_init(&glc->latency, latency, latency_manual_wait, latency_gl_wait_timeout, latency_gl_wait_interval, latency_self_wait_interval);
 				if (glc->inject_swapinterval != GH_SWAP_DONT_SET) {
 					GH_GET_PTR_GL(glXSwapIntervalEXT);
 					if (GH_glXSwapIntervalEXT) {
