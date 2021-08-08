@@ -19,6 +19,7 @@
 #include <GL/glext.h>
 #endif
 
+#define GL_MAX_ANISOTROPY_EXT 0x84FE
 /* we use this value as swap interval to mark the situation that we should
  * not set the swap interval at all. Note that with
  * GLX_EXT_swap_control_tear, negative intervals are allowed, and the
@@ -2225,41 +2226,34 @@ static GLint base_level = 1;
 
 extern void glTexParameteri(GLenum target, GLenum pname, GLint param)
 {
+	GLfloat setAniso = -1.0f;
 	GH_GET_PTR_GL(glTexParameteri);
-	if (pname == GL_TEXTURE_MIN_LOD || pname == GL_TEXTURE_MAX_LOD) {
-		GH_glTexParameteri(target, GL_TEXTURE_MIN_LOD, base_level);
-		GH_glTexParameteri(target, GL_TEXTURE_MAX_LOD, base_level);
-		return;
-	}
-	if (pname == GL_TEXTURE_MIN_FILTER) {
-		param = GL_NEAREST_MIPMAP_NEAREST;
-		GH_glTexParameteri(target, GL_TEXTURE_MIN_LOD, base_level);
-		GH_glTexParameteri(target, GL_TEXTURE_MAX_LOD, base_level);
 	
-	} else if( pname == GL_TEXTURE_MAG_FILTER) {
-		param = GL_NEAREST;
-		GH_glTexParameteri(target, GL_TEXTURE_MIN_LOD, base_level);
-		GH_glTexParameteri(target, GL_TEXTURE_MAX_LOD, base_level);
+	if (pname == GL_TEXTURE_MIN_FILTER) {
+		if (param == GL_NEAREST_MIPMAP_NEAREST || param == GL_NEAREST_MIPMAP_LINEAR || param == GL_LINEAR_MIPMAP_NEAREST) {
+			param = GL_LINEAR_MIPMAP_LINEAR;
+			setAniso = 16.0f;
+		}
 	}
 	GH_glTexParameteri(target, pname, param);
+	if (setAniso >= 0.0f) {
+		GH_GET_PTR_GL(glTexParameterf);
+		GH_glTexParameterf(target, GL_MAX_ANISOTROPY_EXT, setAniso);
+	}
 }
 
 extern void glTexParameterf(GLenum target, GLenum pname, GLfloat param)
 {
 	GH_GET_PTR_GL(glTexParameterf);
-	if (pname == GL_TEXTURE_MIN_LOD || pname == GL_TEXTURE_MAX_LOD) {
-		GH_glTexParameterf(target, GL_TEXTURE_MIN_LOD, base_level);
-		GH_glTexParameterf(target, GL_TEXTURE_MAX_LOD, base_level);
-		return;
-	}
 	if (pname == GL_TEXTURE_MIN_FILTER) {
-		param = GL_NEAREST_MIPMAP_NEAREST;
-		GH_glTexParameterf(target, GL_TEXTURE_MIN_LOD, base_level);
-		GH_glTexParameterf(target, GL_TEXTURE_MAX_LOD, base_level);
-	
-	} else if( pname == GL_TEXTURE_MAG_FILTER) {
-		param = (GLfloat)GL_NEAREST;
-		GH_glTexParameterf(target, GL_TEXTURE_MIN_LOD, base_level);
+		GLint p = (GLint)(param);
+		if (p == GL_NEAREST_MIPMAP_NEAREST || p == GL_NEAREST_MIPMAP_LINEAR || p == GL_LINEAR_MIPMAP_NEAREST) {
+			p = GL_LINEAR_MIPMAP_LINEAR;
+			GH_glTexParameteri(target, pname, p);
+			GH_glTexParameterf(target, GL_MAX_ANISOTROPY_EXT, 16.0f);
+			return;
+		}
+
 	}
 	GH_glTexParameterf(target, pname, param);
 }
