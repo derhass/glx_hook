@@ -18,6 +18,17 @@
 #include <GL/glext.h>
 #endif
 
+#define GH_DLSYM_VIA_DLVSYM /* use dlvsym to query dlsym, if this is not defined, use _dl_sym */
+
+#ifdef __GLIBC__
+#if (__GLIBC__ > 2) || ( (__GLIBC__ == 2 ) && (__GLIBC_MINOR__ >= 34))
+/* glibc >= 2.34 does not export _dl_sym() any more, we MUST use the dlvsym approach */
+#ifndef GH_DLSYM_VIA_DLVSYM
+#define GH_DLSYM_VIA_DLVSYM
+#endif
+#endif
+#endif
+
 /* we use this value as swap interval to mark the situation that we should
  * not set the swap interval at all. Note that with
  * GLX_EXT_swap_control_tear, negative intervals are allowed, and the
@@ -220,6 +231,18 @@ static void *GH_dlsym_internal(void *handle, const char *name)
 {
 	void *ptr;
 
+#ifdef GH_DLSYM_VIA_DLVSYM
+#if defined(__x86_64__)
+#define GH_DLSYM_ABI_VERSION "2.2.5"
+#elif defined(__i386__)
+#define GH_DLSYM_ABI_VERSION "2.0"
+#else
+/* if you need support for your platform, get the exact version for dlsym
+ * for the glibc ABI of your platform */
+#error platform not supported
+#endif
+	ptr=dlvsym(handle, name, "GLIBC_" GH_DLSYM_ABI_VERSION);
+#else
 	/* ARGH: we are bypassing glibc's locking for dlsym(), so we
 	 * must do this on our own */
 	pthread_mutex_lock(&GH_mutex);
@@ -230,12 +253,13 @@ static void *GH_dlsym_internal(void *handle, const char *name)
 	 * behalf of the real application doing a dlsycm, but we do not
 	 *  care... */
 	ptr=_dl_sym(handle, name, GH_dlsym_internal);
+#endif
 
 	pthread_mutex_unlock(&GH_mutex);
 	return ptr;
 }
 
-/* Wrapper funtcion to query the original dlsym() function avoiding
+/* Wrapper funtcion to query an original function avoiding
  * recursively calls to the interceptor dlsym() below */
 static void *GH_dlsym_internal_next(const char *name)
 {
@@ -293,7 +317,34 @@ static PFNGLCLIENTWAITSYNCPROC GH_glClientWaitSync=NULL;
 /* Resolve an unintercepted symbol via the original dlsym() */
 static void *GH_dlsym_next(const char *name)
 {
-	return GH_dlsym(RTLD_NEXT, name);
+	if (GH_dlsym) {
+		return GH_dlsym(RTLD_NEXT, name);
+	}
+	GH_verbose(GH_MSG_WARNING, "failed to dynamically query '%s' because I don't have a dlsym\n", name);
+	return NULL;
+}
+
+/* Wrapper funtcion to query the original dlsym() function avoiding
+ * recursively calls to the interceptor dlsym() below */
+static void GH_dlsym_internal_dlsym()
+{
+	static const char *dlsymname = "dlsym";
+	if (GH_dlsym == NULL) {
+		GH_dlsym = GH_dlsym_internal_next(dlsymname);
+		if (GH_dlsym) {
+			void *ptr;
+			GH_verbose(GH_MSG_DEBUG_INTERCEPTION,"INTERNAL: (%s) = %p\n",dlsymname,GH_dlsym);
+			ptr = GH_dlsym_next(dlsymname);
+			if (ptr != (void*)GH_dlsym) {
+				GH_verbose(GH_MSG_DEBUG_INTERCEPTION,"INTERNAL: (%s) = %p intercepted to %p\n",dlsymname,GH_dlsym,ptr);
+				if (ptr) {
+					GH_dlsym = ptr;
+				}
+			}
+		} else {
+			GH_verbose(GH_MSG_WARNING, "failed to dynamically query '%s'\n", dlsymname);
+		}
+	}
 }
 
 /* Resolve an unintercepted symbol via the original dlsym(),
@@ -1867,9 +1918,8 @@ dlsym(void *handle, const char *name)
 	void *ptr;
 	/* special case: we cannot use GH_GET_PTR as it relies on
 	 * GH_dlsym() which we have to query using GH_dlsym_internal */
-	pthread_mutex_lock(&GH_fptr_mutex); \
-	if(GH_dlsym == NULL)
-		GH_dlsym = GH_dlsym_internal_next("dlsym");
+	pthread_mutex_lock(&GH_fptr_mutex);
+	GH_dlsym_internal_dlsym();
 	pthread_mutex_unlock(&GH_fptr_mutex);
 	interceptor=GH_get_interceptor(name, GH_dlsym_next, "dlsym");
 	ptr=(interceptor)?interceptor:GH_dlsym(handle,name);
@@ -1878,19 +1928,25 @@ dlsym(void *handle, const char *name)
 	return ptr;
 }
 
-/* also intercept GNU specific dlvsym() */
+#ifndef GH_DLSYM_VIA_DLVSYM
+/* Also intercept GNU specific dlvsym().
+ * We can do this only if we are not using dlvsym to query dlsym... */
 extern void *
 dlvsym(void *handle, const char *name, const char *version)
 {
 	void *interceptor;
 	void *ptr;
-	GH_GET_PTR(dlvsym); \
+	pthread_mutex_lock(&GH_fptr_mutex);
+	GH_dlsym_internal_dlsym();
+	pthread_mutex_unlock(&GH_fptr_mutex);
+	GH_GET_PTR(dlvsym);
 	interceptor=GH_get_interceptor(name, GH_dlsym_next, "dlvsym");
 	ptr=(interceptor)?interceptor:GH_dlvsym(handle,name,version);
 	GH_verbose(GH_MSG_DEBUG_INTERCEPTION,"dlvsym(%p, %s, %s) = %p%s\n",handle,name,version,ptr,
 		interceptor?" [intercepted]":"");
 	return ptr;
 }
+#endif
 
 /***************************************************************************
  * INTERCEPTED FUNCTIONS: glX                                              *
@@ -2240,7 +2296,9 @@ static void* GH_get_interceptor(const char *name, GH_resolve_func query,
 #endif
 
 	GH_INTERCEPT(dlsym);
+#ifndef GH_DLSYM_VIA_DLVSYM
 	GH_INTERCEPT(dlvsym);
+#endif
 	GH_INTERCEPT(glXGetProcAddress);
 	GH_INTERCEPT(glXGetProcAddressARB);
 	GH_INTERCEPT(glXSwapIntervalEXT);

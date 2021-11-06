@@ -259,9 +259,7 @@ on the second character as follows:
 
 ### INSTALLATION:
 
-This requires glibc, as we call some internal glibc functions not intended to
-be called. Tested with glibc-2.13 (from debian wheezy), glibc-2.24
-(from debian stretch) and glibc-2.28 (from debian buster). To build, just type
+To build, just type
 
     $ make
 
@@ -269,6 +267,18 @@ be called. Tested with glibc-2.13 (from debian wheezy), glibc-2.24
 Finally copy the `glx_hook.so` to where you like it. For a debug build, do
 
     $ make DEBUG=1
+
+glx_hook requires glibc, as we call some internal glibc functions not intended to
+be called. Tested with glibc-2.13 (from debian wheezy), glibc-2.24
+(from debian stretch) and glibc-2.28 (from debian buster). Beginning with version
+2.34, glibc does not export the internal `_dl_sym` function any more, which breaks
+the previous approach. I implemented a new version which does not depend on any
+internal version by using `dlvsym` instead. But this means that we need to know
+the exact ABI version for the GLIBC `dlsym` function, which is platform-specific.
+I implemented it for i386 and x86_64 architecutes only (but adding other ones
+is quite simple). The second downside is that glx_hook cannot intercept `dlvsym` any
+longer, but since we are only interested in GL functions, it is unlikely to
+have any effect for this specific use case.
 
 ### EXAMPLES
 
