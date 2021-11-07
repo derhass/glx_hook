@@ -202,8 +202,10 @@ static void GH_verbose(int level, const char *fmt, ...)
 typedef void (*GH_fptr)();
 typedef void * (*GH_resolve_func)(const char *);
 
+#ifndef GH_DLSYM_VIA_DLVSYM
 /* mutex used during GH_dlsym_internal () */
 static pthread_mutex_t GH_mutex=PTHREAD_MUTEX_INITIALIZER;
+#endif
 
 /* Mutex for the function pointers. We only guard the
  * if (ptr == NULL) ptr=...; part. The pointers will never
@@ -241,8 +243,10 @@ static void *GH_dlsym_internal(void *handle, const char *name)
  * for the glibc ABI of your platform */
 #error platform not supported
 #endif
+	GH_verbose(GH_MSG_DEBUG, "using dlvsym() method");
 	ptr=dlvsym(handle, name, "GLIBC_" GH_DLSYM_ABI_VERSION);
 #else
+	GH_verbose(GH_MSG_DEBUG, "using _dl_sym() method");
 	/* ARGH: we are bypassing glibc's locking for dlsym(), so we
 	 * must do this on our own */
 	pthread_mutex_lock(&GH_mutex);
@@ -253,9 +257,8 @@ static void *GH_dlsym_internal(void *handle, const char *name)
 	 * behalf of the real application doing a dlsycm, but we do not
 	 *  care... */
 	ptr=_dl_sym(handle, name, GH_dlsym_internal);
-#endif
-
 	pthread_mutex_unlock(&GH_mutex);
+#endif
 	return ptr;
 }
 
@@ -336,9 +339,15 @@ static void GH_dlsym_internal_dlsym()
 			GH_verbose(GH_MSG_DEBUG_INTERCEPTION,"INTERNAL: (%s) = %p\n",dlsymname,GH_dlsym);
 			ptr = GH_dlsym_next(dlsymname);
 			if (ptr != (void*)GH_dlsym) {
-				GH_verbose(GH_MSG_DEBUG_INTERCEPTION,"INTERNAL: (%s) = %p intercepted to %p\n",dlsymname,GH_dlsym,ptr);
 				if (ptr) {
-					GH_dlsym = ptr;
+					if (get_envi("GH_ALLOW_DLSYM_REDIRECTION", 1)) {
+						GH_verbose(GH_MSG_DEBUG_INTERCEPTION,"INTERNAL: (%s) = %p intercepted to %p\n",dlsymname,GH_dlsym,ptr);
+						GH_dlsym = ptr;
+					} else {
+						GH_verbose(GH_MSG_WARNING, "INTERNAL: (%s) = %p would be intercepted to %p but ignoring it\n",dlsymname,GH_dlsym,ptr);
+					}
+				} else {
+					GH_verbose(GH_MSG_WARNING,"INTERNAL: (%s) would be intercepted to NULL, ignoring it\n",dlsymname);
 				}
 			}
 		} else {

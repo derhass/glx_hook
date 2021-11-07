@@ -268,17 +268,44 @@ Finally copy the `glx_hook.so` to where you like it. For a debug build, do
 
     $ make DEBUG=1
 
-glx_hook requires glibc, as we call some internal glibc functions not intended to
-be called. Tested with glibc-2.13 (from debian wheezy), glibc-2.24
-(from debian stretch) and glibc-2.28 (from debian buster). Beginning with version
-2.34, glibc does not export the internal `_dl_sym` function any more, which breaks
-the previous approach. I implemented a new version which does not depend on any
-internal version by using `dlvsym` instead. But this means that we need to know
-the exact ABI version for the GLIBC `dlsym` function, which is platform-specific.
-I implemented it for i386 and x86_64 architecutes only (but adding other ones
-is quite simple). The second downside is that glx_hook cannot intercept `dlvsym` any
-longer, but since we are only interested in GL functions, it is unlikely to
-have any effect for this specific use case.
+glx_hook requires glibc, as we rely on some glibc internas.
+Tested with glibc-2.13 (from debian wheezy), glibc-2.24
+(from debian stretch) and glibc-2.28 (from debian buster).
+
+#### Hooking mechanism
+
+glx_hook works by exporting all the relevant GL functions in the shared object,
+as well as hooking into `dlsym` and `glXGetProcAddress`/`glXGetProcAddressARB`.
+The `dlsym` approach is particularly evil as this requires some trickery to
+get the actual `dlsym` function from `libdl`.
+This is done by one of the following approaches:
+
+* Default: Use the `dlvsym()` function which is an official part of the glibc API and ABI.
+  To query the original `dlsym` via `dlvsym`, we need to know the exact version
+  of the symbol, which in glibc is dependent on the platform.
+  glx_hook currently supports the platforms x86_64 and i386 via this method,
+  but other platforms can easyly be added. Just do a
+  `grep 'GLIBC_.*\bdlsym\b' -r sysdeps` in the root folder of the glibc source.
+
+* Deprecated: Use the internal `_dl_sym()` function of glibc. However, this function
+  is not exported any more since glibc-2.34, so this approach won't work with
+  newer linux distros beginning some time around automn of 2021.
+  This mode can still be activated by commenting out the
+  `#define GH_DLSYM_VIA_DLVSYM` in the code.
+
+When using the `dlvsym` method, this means that we end up getting the symbol
+from `glibc` even if another hooking library is injected to the same process.
+By default, glx_hooks plays nice and actually uses the `dlsym()` queried by
+`dlvsym()` to again query for the unversioned `dlsym`. This behavior can
+be prevented by setting the `GH_ALLOW_DLSYM_REDIRECTION` environment variable
+to 0.
+
+The only advantage that the deprecated `_dl_sym()` method has is that
+that `glx_hook` then also can hook the  `dlvsym` method itself.
+However, for the use case we are interested in,  GL methods are unlikely to ever be
+queried via the versioned symbol name, since the GL driver shared library
+depends on the GL vendor, and there is no stanrad for any version names
+for the GL functions whatsoever.
 
 ### EXAMPLES
 
