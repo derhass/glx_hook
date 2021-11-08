@@ -18,13 +18,12 @@
 #include <GL/glext.h>
 #endif
 
-#define GH_DLSYM_VIA_DLVSYM /* use dlvsym to query dlsym, if this is not defined, use _dl_sym */
 
 #ifdef __GLIBC__
 #if (__GLIBC__ > 2) || ( (__GLIBC__ == 2 ) && (__GLIBC_MINOR__ >= 34))
 /* glibc >= 2.34 does not export _dl_sym() any more, we MUST use the dlvsym approach */
-#ifndef GH_DLSYM_VIA_DLVSYM
-#define GH_DLSYM_VIA_DLVSYM
+#if (GH_DLSYM_METHOD == 1) 
+#error GH_DLSYM_METHOD 1 is not available with this libc version
 #endif
 #endif
 #endif
@@ -35,6 +34,35 @@
  * absolute value specifies the real interval, so we use just INT_MIN to
  * avoid conflicts with values an application might set. */
 #define GH_SWAP_DONT_SET	INT_MIN
+
+/***************************************************************************
+ * GH_DLSYM_METHOD selection                                               *
+ ***************************************************************************/
+
+/* supported methods:
+ * 0: _dl_sym()
+ * 1: dlvsym()
+ * 2: dlsym_wrapper.so
+ * See README.md for details
+ */
+#if (GH_DLSYM_METHOD == 1) /* METHOD 1*/
+#define GH_DLSYM_NEED_LOCK /* METHOD 2*/
+#elif (GH_DLSYM_METHOD == 2)
+#if defined(__x86_64__) /* platforms */
+#define GH_DLSYM_ABI_VERSION "2.2.5"
+#elif defined(__i386__)
+#define GH_DLSYM_ABI_VERSION "2.0"
+#else
+/* if you need support for your platform, get the exact version for dlsym
+ * for the glibc ABI of your platform */
+#error platform not supported
+#endif /* platforms */
+#elif (GH_DLSYM_METHOD == 3) /* METHOD 3*/
+#include "dlsym_wrapper.h"
+#define GH_DLSYM_NEED_LOCK
+#else
+#error GH_DLSYM_METHOD not supported
+#endif /* GH_DLSYM_METHOD */
 
 /***************************************************************************
  * helpers                                                                 *
@@ -202,17 +230,12 @@ static void GH_verbose(int level, const char *fmt, ...)
 typedef void (*GH_fptr)();
 typedef void * (*GH_resolve_func)(const char *);
 
-#ifndef GH_DLSYM_VIA_DLVSYM
+#ifdef GH_DLSYM_NEED_LOCK
 /* mutex used during GH_dlsym_internal () */
 static pthread_mutex_t GH_mutex=PTHREAD_MUTEX_INITIALIZER;
 #endif
 
-/* Mutex for the function pointers. We only guard the
- * if (ptr == NULL) ptr=...; part. The pointers will never
- * change after being set to a non-NULL value for the first time,
- * so it is safe to dereference them without locking */
-static pthread_mutex_t GH_fptr_mutex=PTHREAD_MUTEX_INITIALIZER;
-
+#if (GH_DLSYM_METHOD == 1)
 /* THIS IS AN EVIL HACK: we directly call _dl_sym() of the glibc
  * NOTE: the approrpiate function prototype could be
  *       extern void *_dl_sym(void *, const char *, void (*)() );
@@ -224,6 +247,112 @@ static pthread_mutex_t GH_fptr_mutex=PTHREAD_MUTEX_INITIALIZER;
  *       as broken as before from a C correctness point of view,
  *       but the compiler won't notice any more... ;) */
 extern void *_dl_sym(void *, const char *, void* (*)(void *, const char *) );
+#elif (GH_DLSYM_METHOD == 3)
+/* Use the dlsym_wrapper. We can use dlopen(), but we can not
+ * use dlsym() or dlvsym(), as these functions are hooked by ourselves.
+ * However, dlsym_wrapper will execute an intialization function when
+ * dlopen() is called. The trick is the we load dlsym_wrapper.so
+ * with RTLD_LOCAL | RTLD_DEEPBIND, so that it gets its own private
+ * linker map to the libdl.so, without falling back on the dlsym()
+ * defined here. It then forwards the pointer via an environment
+ * variable (as hex via printf %p format string) */
+static void *dlsym_wrapper_get(void* handle, const char *name)
+{
+	char dlsym_wrapper_name[4096];
+	void *wrapper;
+	const char * ptr_str;
+	void *res = NULL;
+	void *ptr = NULL;
+	Dl_info self;
+	size_t len;
+	char *pos;
+	size_t idx;
+	size_t slen;
+
+	memset(&self,0, sizeof(self));
+	if (!dladdr(dlsym_wrapper_get, &self)) {
+		GH_verbose(GH_MSG_ERROR,"dlsym_wrapper: failed to find myself!\n");
+		return NULL;
+	}
+	if (!self.dli_fname) {
+		GH_verbose(GH_MSG_ERROR,"dlsym_wrapper: failed to find my path!\n");
+		return NULL;
+	}
+	GH_verbose(GH_MSG_DEBUG,"dlsym_wrapper: I am at '%s'\n", self.dli_fname);
+	len = strlen(self.dli_fname);
+	if (len >= sizeof(dlsym_wrapper_name)) {
+		GH_verbose(GH_MSG_ERROR,"dlsym_wrapper: my path '%s' is too long: %zu >= %zu\n", self.dli_fname, len, sizeof(dlsym_wrapper_name));
+		return NULL;
+	}
+	memcpy(dlsym_wrapper_name, self.dli_fname, len+1);
+	pos = strrchr(dlsym_wrapper_name, '/');
+	if (pos) {
+		idx = pos - dlsym_wrapper_name + 1;
+	} else {
+		idx = 0;
+	}
+	if (idx > len) {
+		GH_verbose(GH_MSG_ERROR,"dlsym_wrapper: failed to process my path '%s'\n", dlsym_wrapper_name);
+		return NULL;
+	}
+	len = sizeof(dlsym_wrapper_name) - idx;
+	slen = strlen(DLSYM_WRAPPER_NAME) + 1;
+	if (len < slen) {
+		GH_verbose(GH_MSG_ERROR,"dlsym_wrapper: failed to build path to the wrapper library: avail %zu < needed %zu\n", len, slen);
+		return NULL;
+	}
+	memcpy(dlsym_wrapper_name + idx, DLSYM_WRAPPER_NAME, slen);
+	GH_verbose(GH_MSG_ERROR,"dlsym_wrapper: wrapper library should be at '%s'\n", dlsym_wrapper_name);
+
+	if (getenv(DLSYM_WRAPPER_ENVNAME)) {
+		GH_verbose(GH_MSG_WARNING,"dlsym_wrapper: '%s' already defined, shouldn't be\n", DLSYM_WRAPPER_ENVNAME);
+	}
+	wrapper = dlopen(dlsym_wrapper_name, RTLD_LAZY | RTLD_LOCAL | RTLD_DEEPBIND | RTLD_NOLOAD);
+	if (wrapper) {
+		GH_verbose(GH_MSG_ERROR,"dlsym_wrapper: '%s' already loaded, this does not work!\n", dlsym_wrapper_name);
+		dlclose(wrapper);
+		return NULL;
+	}
+	wrapper = dlopen(dlsym_wrapper_name, RTLD_LAZY | RTLD_LOCAL | RTLD_DEEPBIND);
+	if (!wrapper) {
+		GH_verbose(GH_MSG_ERROR,"dlsym_wrapper: '%s' could not be loaded!\n", dlsym_wrapper_name);
+		return NULL;
+	}
+
+	ptr_str = getenv(DLSYM_WRAPPER_ENVNAME);
+	if (!ptr_str) {
+		GH_verbose(GH_MSG_ERROR,"dlsym_wrapper: '%s' was not defined by the wrapper library\n", DLSYM_WRAPPER_ENVNAME);
+		dlclose(wrapper);
+		return NULL;
+	}
+	GH_verbose(GH_MSG_DEBUG, "dlsym_wrapper: got '%s'='%s'\n", DLSYM_WRAPPER_ENVNAME, ptr_str);
+	if (sscanf(ptr_str, "%p", &ptr) == 1) {
+		if (ptr) {
+			GH_verbose(GH_MSG_DEBUG, "dlsym_wrapper: using %p as original dlsym()\n", ptr);
+			DLSYM_PROC_T orig_dlsym = ptr;
+			res = orig_dlsym(handle, name);
+		} else {
+			GH_verbose(GH_MSG_ERROR, "dlsym_wrapper: original dlsym() pointer is invalid\n", ptr);
+		}
+	} else {
+		GH_verbose(GH_MSG_WARNING,"dlsym_wrapper: failed to parse pointer from '%s'='%s'\n", DLSYM_WRAPPER_ENVNAME, ptr_str);
+	}
+
+	dlclose(wrapper);
+	if (res) {
+		GH_verbose(GH_MSG_ERROR, "dlsym_wrapper: successfilly queried '%s' = %p\n", name, res);
+	} else {
+		GH_verbose(GH_MSG_ERROR, "dlsym_wrapper: failed to query '%s'\n", name);
+	}
+	return res;
+}
+#endif
+
+/* Mutex for the function pointers. We only guard the
+ * if (ptr == NULL) ptr=...; part. The pointers will never
+ * change after being set to a non-NULL value for the first time,
+ * so it is safe to dereference them without locking */
+static pthread_mutex_t GH_fptr_mutex=PTHREAD_MUTEX_INITIALIZER;
 
 /* Wrapper function called in place of dlsym(), since we intercept dlsym().
  * We use this ONLY to get the original dlsym() itself, all other symbol
@@ -233,23 +362,14 @@ static void *GH_dlsym_internal(void *handle, const char *name)
 {
 	void *ptr;
 
-#ifdef GH_DLSYM_VIA_DLVSYM
-#if defined(__x86_64__)
-#define GH_DLSYM_ABI_VERSION "2.2.5"
-#elif defined(__i386__)
-#define GH_DLSYM_ABI_VERSION "2.0"
-#else
-/* if you need support for your platform, get the exact version for dlsym
- * for the glibc ABI of your platform */
-#error platform not supported
-#endif
-	GH_verbose(GH_MSG_DEBUG, "using dlvsym() method");
-	ptr=dlvsym(handle, name, "GLIBC_" GH_DLSYM_ABI_VERSION);
-#else
-	GH_verbose(GH_MSG_DEBUG, "using _dl_sym() method");
+#ifdef GH_DLSYM_NEED_LOCK
 	/* ARGH: we are bypassing glibc's locking for dlsym(), so we
 	 * must do this on our own */
 	pthread_mutex_lock(&GH_mutex);
+#endif
+
+#if (GH_DLSYM_METHOD == 1)
+	GH_verbose(GH_MSG_DEBUG, "using _dl_sym() method\n");
 
 	/* Third argument is the address of the caller, (glibc uses stack
 	 * unwinding internally to get this),  we just use the address of our
@@ -257,6 +377,17 @@ static void *GH_dlsym_internal(void *handle, const char *name)
 	 * behalf of the real application doing a dlsycm, but we do not
 	 *  care... */
 	ptr=_dl_sym(handle, name, GH_dlsym_internal);
+#elif (GH_DLSYM_METHOD == 2)
+	GH_verbose(GH_MSG_DEBUG, "using dlvsym() method\n");
+	ptr=dlvsym(handle, name, "GLIBC_" GH_DLSYM_ABI_VERSION);
+#elif (GH_DLSYM_METHOD == 3)
+	GH_verbose(GH_MSG_DEBUG, "using dlsym_wrapper.so method\n");
+	ptr=dlsym_wrapper_get(handle, name);
+#else
+#error GH_DLSYM_METHOD not supported
+#endif /* GH_DLSYM_METHOD */
+
+#ifdef GH_DLSYM_NEED_LOCK
 	pthread_mutex_unlock(&GH_mutex);
 #endif
 	return ptr;
@@ -336,7 +467,7 @@ static void GH_dlsym_internal_dlsym()
 		GH_dlsym = GH_dlsym_internal_next(dlsymname);
 		if (GH_dlsym) {
 			void *ptr;
-			GH_verbose(GH_MSG_DEBUG_INTERCEPTION,"INTERNAL: (%s) = %p\n",dlsymname,GH_dlsym);
+			GH_verbose(GH_MSG_DEBUG_INTERCEPTION,"INTERNAL: (%s) = %p, ours is %p\n",dlsymname,GH_dlsym,dlsym);
 			ptr = GH_dlsym_next(dlsymname);
 			if (ptr != (void*)GH_dlsym) {
 				if (ptr) {
@@ -1937,7 +2068,7 @@ dlsym(void *handle, const char *name)
 	return ptr;
 }
 
-#ifndef GH_DLSYM_VIA_DLVSYM
+#if (GH_DLSYM_METHOD != 2)
 /* Also intercept GNU specific dlvsym().
  * We can do this only if we are not using dlvsym to query dlsym... */
 extern void *
@@ -2305,7 +2436,7 @@ static void* GH_get_interceptor(const char *name, GH_resolve_func query,
 #endif
 
 	GH_INTERCEPT(dlsym);
-#ifndef GH_DLSYM_VIA_DLVSYM
+#if (GH_DLSYM_METHOD != 2)
 	GH_INTERCEPT(dlvsym);
 #endif
 	GH_INTERCEPT(glXGetProcAddress);
