@@ -312,6 +312,13 @@ By default, glx_hooks plays nice and actually uses the `dlsym()` queried by
 be prevented by setting the `GH_ALLOW_DLSYM_REDIRECTION` environment variable
 to 0. It is only relevant for `METHOD=2`.
 
+You can control wether we shall also hook the `dlsym()` and `dlvsym()` methods
+dynamically, meaning an application calling (our) `dlsym()` to query for `"dlsym"` itself
+should be redirected to our implementation. Use `GH_HOOK_DLSYM_DYNAMICALLY=1` or
+`GH_HOOK_DLVSYM_DYNAMICALLY=1` to enable is. Bu default, this is disabled, as this
+creates lots of shenanigans, especially if we are not the only `dlsym`/`dlvsym` hook
+around. Use with care.
+
 ### EXAMPLES
 
 There are some example scripts to simplify the setup:

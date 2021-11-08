@@ -18,6 +18,7 @@
 #include <GL/glext.h>
 #endif
 
+#include "dlsym_wrapper.h"
 
 #ifdef __GLIBC__
 #if (__GLIBC__ > 2) || ( (__GLIBC__ == 2 ) && (__GLIBC_MINOR__ >= 34))
@@ -58,7 +59,6 @@
 #error platform not supported
 #endif /* platforms */
 #elif (GH_DLSYM_METHOD == 3) /* METHOD 3*/
-#include "dlsym_wrapper.h"
 #define GH_DLSYM_NEED_LOCK
 #else
 #error GH_DLSYM_METHOD not supported
@@ -269,6 +269,9 @@ static void *dlsym_wrapper_get(void* handle, const char *name)
 	size_t idx;
 	size_t slen;
 
+	(void)handle;
+	(void)name;
+
 	memset(&self,0, sizeof(self));
 	if (!dladdr(dlsym_wrapper_get, &self)) {
 		GH_verbose(GH_MSG_ERROR,"dlsym_wrapper: failed to find myself!\n");
@@ -329,8 +332,7 @@ static void *dlsym_wrapper_get(void* handle, const char *name)
 	if (sscanf(ptr_str, "%p", &ptr) == 1) {
 		if (ptr) {
 			GH_verbose(GH_MSG_DEBUG, "dlsym_wrapper: using %p as original dlsym()\n", ptr);
-			DLSYM_PROC_T orig_dlsym = ptr;
-			res = orig_dlsym(handle, name);
+			res = ptr;
 		} else {
 			GH_verbose(GH_MSG_ERROR, "dlsym_wrapper: original dlsym() pointer is invalid\n", ptr);
 		}
@@ -463,8 +465,11 @@ static void *GH_dlsym_next(const char *name)
 static void GH_dlsym_internal_dlsym()
 {
 	static const char *dlsymname = "dlsym";
+	static const char *dlvsymname = "dlvsym";
+	DLSYM_PROC_T orig_dlsym = NULL;
 	if (GH_dlsym == NULL) {
 		GH_dlsym = GH_dlsym_internal_next(dlsymname);
+		orig_dlsym = GH_dlsym;
 		if (GH_dlsym) {
 			void *ptr;
 			GH_verbose(GH_MSG_DEBUG_INTERCEPTION,"INTERNAL: (%s) = %p, ours is %p\n",dlsymname,GH_dlsym,dlsym);
@@ -484,6 +489,13 @@ static void GH_dlsym_internal_dlsym()
 		} else {
 			GH_verbose(GH_MSG_WARNING, "failed to dynamically query '%s'\n", dlsymname);
 		}
+	}
+
+	/* use the original dlsym, not a potentially redirected one */
+	if (orig_dlsym && (GH_dlvsym == NULL)) {
+		Dl_info info;
+		memset(&info,0,sizeof(info));
+		GH_dlvsym = orig_dlsym(RTLD_NEXT,dlvsymname);
 	}
 }
 
@@ -2432,12 +2444,35 @@ static void* GH_get_interceptor(const char *name, GH_resolve_func query,
 	}
 
 #ifdef GH_SWAPBUFFERS_INTERCEPT
-	static int do_swapbuffers=-1;
+	static int do_swapbuffers=0;
 #endif
-
-	GH_INTERCEPT(dlsym);
+	static int do_dlsym = 0;
 #if (GH_DLSYM_METHOD != 2)
-	GH_INTERCEPT(dlvsym);
+	static int do_dlvsym = 0;
+#endif
+	static int inited = 0;
+
+	if (!inited) {
+#ifdef GH_SWAPBUFFERS_INTERCEPT
+		do_swapbuffers =get_envi("GH_SWAPBUFFERS", 0) ||
+				get_envi("GH_FRAMETIME", 0) ||
+				get_envi("GH_SWAP_SLEEP_USECS", 0) ||
+				(get_envi("GH_LATENCY", GH_LATENCY_NOP) != GH_LATENCY_NOP);
+#endif
+		do_dlsym = get_envi("GH_HOOK_DLSYM_DYNAMICALLY", 0);
+#if (GH_DLSYM_METHOD != 2)
+		do_dlvsym = get_envi("GH_HOOK_DLVSYM_DYNAMICALLY", 0);
+#endif
+		inited = 1;
+	}
+
+	if (do_dlsym) {
+		GH_INTERCEPT(dlsym);
+	}
+#if (GH_DLSYM_METHOD != 2)
+	if (do_dlvsym) {
+		GH_INTERCEPT(dlvsym);
+	}
 #endif
 	GH_INTERCEPT(glXGetProcAddress);
 	GH_INTERCEPT(glXGetProcAddressARB);
