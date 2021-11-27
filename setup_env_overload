@@ -1,0 +1,42 @@
+# NOTE: this MUST be sourced in the current shell to have any effect.
+# The problem here is: we cannot determine the path of the script by
+# itself, since in the sourced case, $0 is the path to the shell the
+# user is running. So the user must specify the path for us. As a
+# simplification when no parameter is given, the current working dir
+# is used.
+
+DIR="`pwd`"
+
+while [[ "x$1x" != "xx" ]]; do
+	DIR="$1"
+	shift
+done
+
+
+# check if this directory seems right: it should contain the glx_hook.so
+
+if [ -r "$DIR"/glx_hook.so ]; then
+	echo using "$DIR"
+	export LD_PRELOAD="$DIR/glx_hook.so":"$LD_PRELOAD"
+	# settings to use
+	# do not force vsync, as it is enabled in the game, and not forcing it "on" everywhere speeds up initial loading screen a bit
+	export GH_SWAP_MODE=max=1 
+	export GH_LATENCY=1
+	#experimental stuff
+	export GH_LATENCY_GL_WAIT_TIMEOUT_USECS=8000 # not really used, since MANUAL_WAIT=1
+	#almost busy-waiting
+	export GH_LATENCY_GL_WAIT_USECS=100
+	export GH_LATENCY_WAIT_USECS=0
+	export GH_LATENCY_MANUAL_WAIT=1
+	# request GL 4.6 to get the newest wait behavior
+	export GH_FORCE_MIN_GL_VERSION_MAJOR=4
+	export GH_FORCE_MIN_GL_VERSION_MINOR=6
+	#export GH_VERBOSE=6
+	#export GH_VERBOSE_FILE=/tmp/ghxxx
+	#export GH_SWAP_SLEEP_USECS=30000
+else	
+	echo "$DIR" seems not to be the right place
+	echo 'please use: source $PATH_GLX_HOOK/setup_env $PATH_TO_GLX_HOOK'
+	echo '        or: cd $PATH_TO_GLX_HOOK && source ./setup_env'
+fi
+
