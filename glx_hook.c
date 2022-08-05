@@ -1804,7 +1804,7 @@ static GLXContext override_create_context(Display *dpy, XVisualInfo *vis, const 
 	pthread_mutex_unlock(&ctx_creation_opts.mutex);
 
 	if (need_creation_override(&ctx_creation_opts)) {
-		GLXContext ctx;
+		GLXContext ctx = NULL;
 		int *attribs_override = get_override_attributes(&ctx_creation_opts, attribs);
 		if (!attribs_override) {
 			GH_verbose(GH_MSG_WARNING, "failed to generate context creation override attributes!\n");
@@ -1824,8 +1824,12 @@ static GLXContext override_create_context(Display *dpy, XVisualInfo *vis, const 
 				return NULL;	
 			}
 		}
-		GH_GET_PTR_GL(glXCreateContextAttribsARB);
-		ctx=GH_glXCreateContextAttribsARB(dpy, *fbconfig, shareList, direct, attribs_override);
+		GH_GET_GL_PROC(glXCreateContextAttribsARB);
+		if (GH_glXCreateContextAttribsARB) {
+			ctx=GH_glXCreateContextAttribsARB(dpy, *fbconfig, shareList, direct, attribs_override);
+		} else {
+			GH_verbose(GH_MSG_WARNING, "failed to get glXCreateContextAttribsARB\n");
+		}
 		if (ctx == NULL) {
 			GH_verbose(GH_MSG_WARNING, "overridden context creation failed!\n");
 		} else {
