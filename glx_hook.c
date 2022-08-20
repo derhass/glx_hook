@@ -1997,7 +1997,7 @@ static int GH_swap_interval_absolute(const volatile GH_config *cfg, int interval
 			new_interval=interval;
 	}
 
-	GH_verbose(GH_MSG_INFO,"swap interval %d -> %d\n", interval, new_interval);
+	GH_verbose(GH_MSG_DEBUG,"swap interval, absolute value %d -> %d\n", interval, new_interval);
 	return new_interval;
 }
 
