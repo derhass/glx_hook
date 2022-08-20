@@ -21,6 +21,7 @@ if [ -r "$DIR"/glx_hook.so ]; then
 	# settings to use
 	# do not force vsync, as it is enabled in the game, and not forcing it "on" everywhere speeds up initial loading screen a bit
 	export GH_SWAP_MODE=max=1 
+	export GH_SWAP_TEAR=enable
 	export GH_LATENCY=1
 	#experimental stuff
 	export GH_LATENCY_GL_WAIT_TIMEOUT_USECS=8000 # not really used, since MANUAL_WAIT=1
@@ -31,6 +32,7 @@ if [ -r "$DIR"/glx_hook.so ]; then
 	# request GL 4.6 to get the newest wait behavior
 	export GH_FORCE_MIN_GL_VERSION_MAJOR=4
 	export GH_FORCE_MIN_GL_VERSION_MINOR=6
+	export GH_FORCE_GL_CONTEXT_FLAGS_NO_ERROR=1 # request a no-error context
 	#export GH_VERBOSE=6
 	#export GH_VERBOSE_FILE=/tmp/ghxxx
 	#export GH_SWAP_SLEEP_USECS=30000

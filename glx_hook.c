@@ -1061,6 +1061,7 @@ typedef struct gl_context_ceation_opts_s {
 	int force_flags_off;
 	int force_profile_on;
 	int force_profile_off;
+	int force_no_error;
 } gl_context_creation_opts_t;
 
 /* flag bits */
@@ -1101,7 +1102,8 @@ static gl_context_creation_opts_t ctx_creation_opts = {
 	.force_flags_on = 0,
 	.force_flags_off = 0,
 	.force_profile_on = 0,
-	.force_profile_off = 0
+	.force_profile_off = 0,
+	.force_no_error = -1,
 };
 static gl_context_t * volatile ctx_list=NULL;
 static volatile int ctx_counter=0;
@@ -1523,6 +1525,12 @@ GH_debug_callback_AMD(GLuint id, GLenum category, GLenum severity,
 
 static void context_creation_opts_init(gl_context_creation_opts_t *opts)
 {
+	opts->force_profile_on = 0;
+	opts->force_profile_off = 0;
+	opts->force_flags_on = 0;
+	opts->force_flags_off = 0;
+	opts->force_no_error = -1;
+
 	if (get_envi("GH_FORCE_GL_CONTEXT_PROFILE_CORE", 0)) {
 		opts->force_profile_on = GLX_CONTEXT_CORE_PROFILE_BIT_ARB;
 		opts->force_profile_off = GLX_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB;
@@ -1536,16 +1544,26 @@ static void context_creation_opts_init(gl_context_creation_opts_t *opts)
 		opts->flags |= GH_GLCTX_COMPAT_IF_LEGACY;
 	}
 	if (get_envi("GH_FORCE_GL_CONTEXT_FLAGS_NO_FORWARD_COMPAT", 0)) {
-		opts->force_flags_off = GLX_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB;
+		opts->force_flags_on &= ~GLX_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB;
+		opts->force_flags_off |= GLX_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB;
 	}
 	if (get_envi("GH_FORCE_GL_CONTEXT_FLAGS_NO_DEBUG", 0)) {
-		opts->force_flags_off = GLX_CONTEXT_DEBUG_BIT_ARB;
+		opts->force_flags_on &= ~GLX_CONTEXT_DEBUG_BIT_ARB;
+		opts->force_flags_off |= GLX_CONTEXT_DEBUG_BIT_ARB;
 	}
 	if (get_envi("GH_FORCE_GL_CONTEXT_FLAGS_FORWARD_COMPAT", 0)) {
-		opts->force_flags_on = GLX_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB;
+		opts->force_flags_on |= GLX_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB;
+		opts->force_flags_off &= ~GLX_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB;
 	}
 	if (get_envi("GH_FORCE_GL_CONTEXT_FLAGS_DEBUG", 0)) {
-		opts->force_flags_on = GLX_CONTEXT_DEBUG_BIT_ARB;
+		opts->force_flags_on |= GLX_CONTEXT_DEBUG_BIT_ARB;
+		opts->force_flags_off &= ~GLX_CONTEXT_DEBUG_BIT_ARB;
+	}
+	if (get_envi("GH_FORCE_GL_CONTEXT_FLAGS_NO_ERROR", 0)) {
+		opts->force_no_error = GL_TRUE;
+	}
+	if (get_envi("GH_FORCE_GL_CONTEXT_FLAGS_ERROR", 0)) {
+		opts->force_no_error = GL_FALSE;
 	}
 
 	opts->force_version[0] = get_envi("GH_FORCE_GL_VERSION_MAJOR", opts->force_version[0]);
@@ -1562,6 +1580,14 @@ static void context_creation_opts_init(gl_context_creation_opts_t *opts)
 
 	opts->force_profile_on = get_envi("GH_FORCE_GL_CONTEXT_PROFILE_MASK_ON", opts->force_profile_on);
 	opts->force_profile_off = get_envi("GH_FORCE_GL_CONTEXT_PROFILE_MASK_OFF", opts->force_profile_off);
+
+	GH_verbose(GH_MSG_DEBUG, "got GL override options: force version %d.%d, min %d.%d, max %d.%d, flags +0x%x -0x%x, profile flags: +0x%x -0x%x, no error: %d\n",
+		opts->force_version[0],opts->force_version[1],
+		opts->force_version_min[0], opts->force_version_min[1],
+		opts->force_version_max[0], opts->force_version_max[1],
+		(unsigned)opts->force_flags_on, (unsigned)opts->force_flags_off,
+		(unsigned)opts->force_profile_on, (unsigned)opts->force_profile_off,
+		opts->force_no_error);
 }
 
 static int need_creation_override(const gl_context_creation_opts_t *opts)
@@ -1581,17 +1607,21 @@ static int need_creation_override(const gl_context_creation_opts_t *opts)
 	if (opts->force_profile_on || opts->force_profile_off) {
 		return 3;
 	}
+	if (opts->force_no_error >= 0) {
+		return 4;
+	}
 
 	return 0;
 }
 
 static int* get_override_attributes(gl_context_creation_opts_t *opts, const int *attribs)
 {
-	const int our_count=4;
+	const int our_count=5;
 	int count = 0;
 	int additional_count = 0;
 	int req_version[2] = {1,0};
 	int req_profile_mask = GLX_CONTEXT_CORE_PROFILE_BIT_ARB;
+	int req_no_error = -1;
 	int req_flags = 0;
 	int legacy = 0;
 	int *attr_override;
@@ -1616,6 +1646,9 @@ static int* get_override_attributes(gl_context_creation_opts_t *opts, const int 
 					break;
 				case GLX_CONTEXT_FLAGS_ARB:
 					req_flags = value;
+					break;
+				case GLX_CONTEXT_OPENGL_NO_ERROR_ARB:
+					req_no_error = value;
 					break;
 				default:
 					additional_count++;
@@ -1709,9 +1742,15 @@ static int* get_override_attributes(gl_context_creation_opts_t *opts, const int 
 			   (unsigned)req_profile_mask, (unsigned)new_profile);
 		req_profile_mask = new_profile;
 	}
+	if (opts->force_no_error >= 0) {
+		GH_verbose(GH_MSG_INFO, "overriding context NO_ERROR behavior from %d to %d\n",
+			   req_no_error, opts->force_no_error);
+		req_no_error = opts->force_no_error;
+	}
 
 	attr_override = malloc(sizeof(*attr_override) * ((additional_count + our_count) * 2 + 2));
 	if (!attr_override) {
+		GH_verbose(GH_MSG_ERROR, "overriding context attributes not possible: out of memory\n");
 		return NULL;
 	}
 
@@ -1725,6 +1764,10 @@ static int* get_override_attributes(gl_context_creation_opts_t *opts, const int 
 	attr_override[pos++] = req_profile_mask;
 	attr_override[pos++] = GLX_CONTEXT_FLAGS_ARB;
 	attr_override[pos++] = req_flags;
+	if (req_no_error >= 0) {
+		attr_override[pos++] = GLX_CONTEXT_OPENGL_NO_ERROR_ARB;
+		attr_override[pos++] = req_no_error;
+	}
 
 	for (i=0; i<count; i++) {
 		unsigned int name = (unsigned)attribs[2*i];
@@ -1734,6 +1777,7 @@ static int* get_override_attributes(gl_context_creation_opts_t *opts, const int 
 			case GLX_CONTEXT_MINOR_VERSION_ARB:
 			case GLX_CONTEXT_PROFILE_MASK_ARB:
 			case GLX_CONTEXT_FLAGS_ARB:
+			case GLX_CONTEXT_OPENGL_NO_ERROR_ARB:
 				(void)0;
 				break;
 			default:
