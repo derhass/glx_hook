@@ -9,8 +9,8 @@ doesn't allow you to override this.
 With the proprietary NVIDIA Linux driver, the nvidia-settings and
 `__GL_SYNC_TO_VBLANK` environment variable are actually overriden by an
 application using
-[`GLX_EXT_swap_control`](https://www.opengl.org/registry/specs/EXT/swap_control.txt),
-[`GLX_SGI_swap_control`](https://www.opengl.org/registry/specs/SGI/swap_control.txt)
+[`GLX_EXT_swap_control`](https://registry.khronos.org/OpenGL/extensions/EXT/EXT_swap_control.txt),
+[`GLX_SGI_swap_control`](https://registry.khronos.org/OpenGL/extensions/SGI/GLX_SGI_swap_control.txt)
 or `GLX_MESA_swap_control` extensions.
 
 This tool works by exchanging the
@@ -48,7 +48,7 @@ For actually injection such calls, have a look at the experimental option
 NVidia is promoting a feature called "adaptive vsync" where a "late" buffer
 swap is done immediately instead of being delayed to the next sync interval.
 This feature is exposed via the
-[`GLX_EXT_swap_control_tear`](https://www.opengl.org/registry/specs/EXT/glx_swap_control_tear.txt)
+[`GLX_EXT_swap_control_tear`](https://registry.khronos.org/OpenGL/extensions/EXT/GLX_EXT_swap_control_tear.txt)
 extension. If this
 is present, negative intervals enable adaptive vsync with the absolute
 value beeing the swap interval. The `GH_SWAP_TEAR` environment variable can
@@ -107,7 +107,7 @@ supported:
 * `0`: no frametime measurements (the default)
 * `1`: measure frametime on CPU only
 * `2`: measure frametimes on CPU and GPU (requires a context >= 3.3, or supporting the
-[`GL_ARB_timer_query`](https://www.opengl.org/registry/specs/ARB/timer_query.txt)
+[`GL_ARB_timer_query`](https://registry.khronos.org/OpenGL/extensions/ARB/ARB_timer_query.txt)
 extension)
 
 Use `GH_FRAMETIME_DELAY=$n` to set the delay for the timer queries (default: 10 frames).
@@ -154,7 +154,7 @@ values might be used:
 * `0`: limit to 0, force a sync right _before_ the buffer swap
 * `>0`: limit the number of pending frames to `$n` (requires a context >= 3.2,
 or supporting the
-[`GL_ARB_sync`](https://www.opengl.org/registry/specs/ARB/sync.txt)
+[`GL_ARB_sync`](https://registry.khronos.org/OpenGL/extensions/ARB/ARB_sync.txt)
 extension)
 
 This can be helpful in situations where you experience stuttering in a GL application. Preferably,
@@ -199,7 +199,7 @@ a slower machine.
 #### GL Context attribute overrides
 
 You can override the attributes for GL context creation. This will require the
-[`GLX_ARB_create_context`](https://www.khronos.org/registry/OpenGL/extensions/ARB/GLX_ARB_create_context.txt)
+[`GLX_ARB_create_context`](https://registry.khronos.org/OpenGL/extensions/ARB/GLX_ARB_create_context.txt)
 extension. The following overrides are defined:
 * `GH_FORCE_MIN_GL_VERSION_MAJOR`: set the the minimum GL major version number to request
 * `GH_FORCE_MIN_GL_VERSION_MINOR`: set the the minimum GL minor version number to request
