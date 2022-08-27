@@ -187,8 +187,16 @@ is set to a non-zero value
 Set `GH_SWAPBUFFERS=$n` to only execute every `$n`-th buffer swap. This might be
 useful for games where all game logic is implemented in the same loop as
 the rendering, and you want vsync on but stilll a higher frequency for the loop.
-Currently, there is no adaptive mode, so you need to have`$n` times the framerate
+In this mode, you need to reach a frame rate of  `$n` times the refresh
 to not miss any display frames.
+
+There is also an experimental - and very crude - adaptive mode which can be enabled by setting
+`GH_MIN_SWAP_USECS` to a value above zero. If enabled, the `GH_SWAPBUFFERS` setting is
+ignored, and the swapbuffer operation is omitted if less than this amount of time
+has passed since the last buffer swap was actually carried out. Note that this mode
+can be very unstable, depending on the app and also the GL driver. If might help to
+test it  combination with various latency limiter and swap omission flush modes, and also
+different threshold durations.
 
 The interaction between the latency limiter and swap buffer omission can be controlled
 by the `GH_SWAP_OMISSION_LATENCY` option as follows:

@@ -1078,6 +1078,8 @@ typedef struct gl_context_s {
 	int inject_swapinterval;
 	int swap_omission_latency;
 	int swap_omission_flush;
+	uint64_t min_swap_time;
+	uint64_t prev_swap_time;
 	unsigned int num;
 	struct gl_context_s *next;
 	GH_frametimes frametimes;
@@ -1144,6 +1146,8 @@ create_ctx(GLXContext ctx, unsigned int num)
 		glc->inject_swapinterval=GH_SWAP_DONT_SET;
 		glc->swap_omission_latency=0;
 		glc->swap_omission_flush=1;
+		glc->min_swap_time = 0;
+		glc->prev_swap_time = 0;
 		glc->flags=GH_GL_NEVER_CURRENT;
 		glc->num=num;
 		glc->original_debug_callback=(GLDEBUGPROC)NULL;
@@ -1207,7 +1211,12 @@ remove_ctx(GLXContext ctx)
 static void
 read_config(gl_context_t *glc)
 {
+	int min_swap_usecs = get_envi("GH_MIN_SWAP_USECS",0);
 	glc->swapbuffers=get_envi("GH_SWAPBUFFERS",0);
+	if (min_swap_usecs > 0) {
+		glc->swapbuffers = 1;
+		glc->min_swap_time = (uint64_t)min_swap_usecs * (uint64_t)1000ULL;
+	}
 	glc->inject_swapinterval=get_envi("GH_INJECT_SWAPINTERVAL", GH_SWAP_DONT_SET);
 	glc->swap_omission_latency = get_envi("GH_SWAP_OMISSION_LATENCY", 0);
 	glc->swap_omission_flush = get_envi("GH_SWAP_OMISSION_FLUSH", 1);
@@ -2440,10 +2449,20 @@ extern void glXSwapBuffers(Display *dpy, GLXDrawable drawable)
 	if (glc) {
 		frametimes_before_swap(&glc->frametimes);
 		if (glc->swapbuffers > 0) {
+			struct timespec ts_now;
+			uint64_t now;
+			int do_swap;
 			if (glc->swap_omission_latency > 0) {
 				latency_before_swap(&glc->latency);
 			}
-			if (++glc->swapbuffer_cnt==glc->swapbuffers) {
+			if (glc->min_swap_time > 0) {
+				clock_gettime(CLOCK_MONOTONIC, &ts_now);
+				now = (uint64_t)ts_now.tv_sec  * (uint64_t)1000000000ull + (uint64_t)ts_now.tv_nsec;
+				do_swap = (now - glc->prev_swap_time >= glc->min_swap_time);
+			} else {
+				do_swap = (++glc->swapbuffer_cnt >= glc->swapbuffers);
+			}
+			if (do_swap) {
 				if (glc->swap_omission_latency < 1) {
 					latency_before_swap(&glc->latency);
 					GH_glXSwapBuffers(dpy, drawable);
@@ -2451,7 +2470,7 @@ extern void glXSwapBuffers(Display *dpy, GLXDrawable drawable)
 				} else {
 					GH_glXSwapBuffers(dpy, drawable);
 				}
-				glc->swapbuffer_cnt=0;
+				glc->swapbuffer_cnt = 0;
 			} else {
 				switch (glc->swap_omission_flush) {
 					case 1:
@@ -2466,6 +2485,11 @@ extern void glXSwapBuffers(Display *dpy, GLXDrawable drawable)
 			}
 			if (glc->swap_omission_latency > 0) {
 				latency_after_swap(&glc->latency);
+			}
+			if (do_swap && glc->min_swap_time > 0) {
+				clock_gettime(CLOCK_MONOTONIC, &ts_now);
+				now = (uint64_t)ts_now.tv_sec  * (uint64_t)1000000000ull + (uint64_t)ts_now.tv_nsec;
+				glc->prev_swap_time = now;
 			}
 		} else {
 			latency_before_swap(&glc->latency);
