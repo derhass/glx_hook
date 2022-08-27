@@ -190,6 +190,24 @@ the rendering, and you want vsync on but stilll a higher frequency for the loop.
 Currently, there is no adaptive mode, so you need to have`$n` times the framerate
 to not miss any display frames.
 
+The interaction between the latency limiter and swap buffer omission can be controlled
+by the `GH_SWAP_OMISSION_LATENCY` option as follows:
+* `0`: apply the latency limiter on every swapbuffer operation which is actually carried out (the default)
+* `1`: apply the letancy limiter to every swapbuffer operation the application attempts to do, including the omitted ones
+
+Furthermore, you can control the flush behavior at omitted swapbuffer operations via
+the `GH_SWAP_OMISSION_FLUSH` variable:
+* `0`: do nothing
+* `1`: do a flush via `glFlush` (the default)
+* `2`: do a full sync via `glFinish`
+When the latency limiter is enabled and `GH_SWAP_OMISSION_LATENCY` is set to `1`,
+you probably should set `GH_SWAP_OMISSION_FLUSH` to 0 to avoid additional syncs
+the latency limiter already cares about.
+
+Frametime measurements will always measure each individual frame the application
+attempted to render, and is not (directly) affected by the swap buffer omission
+settings.
+
 #### Sleep injection
 
 Set `GH_SWAP_SLEEP_USECS=$n` to force an addition sleep of that many microseconds

@@ -1076,6 +1076,8 @@ typedef struct gl_context_s {
 	int swapbuffers;
 	int swapbuffer_cnt;
 	int inject_swapinterval;
+	int swap_omission_latency;
+	int swap_omission_flush;
 	unsigned int num;
 	struct gl_context_s *next;
 	GH_frametimes frametimes;
@@ -1140,6 +1142,8 @@ create_ctx(GLXContext ctx, unsigned int num)
 		glc->swapbuffers=0;
 		glc->swapbuffer_cnt=0;
 		glc->inject_swapinterval=GH_SWAP_DONT_SET;
+		glc->swap_omission_latency=0;
+		glc->swap_omission_flush=1;
 		glc->flags=GH_GL_NEVER_CURRENT;
 		glc->num=num;
 		glc->original_debug_callback=(GLDEBUGPROC)NULL;
@@ -1205,6 +1209,8 @@ read_config(gl_context_t *glc)
 {
 	glc->swapbuffers=get_envi("GH_SWAPBUFFERS",0);
 	glc->inject_swapinterval=get_envi("GH_INJECT_SWAPINTERVAL", GH_SWAP_DONT_SET);
+	glc->swap_omission_latency = get_envi("GH_SWAP_OMISSION_LATENCY", 0);
+	glc->swap_omission_flush = get_envi("GH_SWAP_OMISSION_FLUSH", 1);
 	if (get_envi("GH_GL_DEBUG_OUTPUT",0)) {
 		glc->flags |= GH_GL_INTERCEPT_DEBUG;
 	}
@@ -2434,14 +2440,32 @@ extern void glXSwapBuffers(Display *dpy, GLXDrawable drawable)
 	if (glc) {
 		frametimes_before_swap(&glc->frametimes);
 		if (glc->swapbuffers > 0) {
-			if (++glc->swapbuffer_cnt==glc->swapbuffers) {
+			if (glc->swap_omission_latency > 0) {
 				latency_before_swap(&glc->latency);
-				GH_glXSwapBuffers(dpy, drawable);
-				latency_after_swap(&glc->latency);
+			}
+			if (++glc->swapbuffer_cnt==glc->swapbuffers) {
+				if (glc->swap_omission_latency < 1) {
+					latency_before_swap(&glc->latency);
+					GH_glXSwapBuffers(dpy, drawable);
+					latency_after_swap(&glc->latency);
+				} else {
+					GH_glXSwapBuffers(dpy, drawable);
+				}
 				glc->swapbuffer_cnt=0;
 			} else {
-				/* GH_glFinish(); */
-				GH_glFlush();
+				switch (glc->swap_omission_flush) {
+					case 1:
+						GH_glFlush();
+						break;
+					case 2:
+						GH_glFinish();
+						break;
+					default:
+						(void)0; /* nop */
+				}
+			}
+			if (glc->swap_omission_latency > 0) {
+				latency_after_swap(&glc->latency);
 			}
 		} else {
 			latency_before_swap(&glc->latency);
