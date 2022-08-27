@@ -231,7 +231,7 @@ extension. The following overrides are defined:
 * `GH_FORCE_GL_CONTEXT_FLAGS_DEBUG`: set to non-zero to force debug contexts. `GH_FORCE_GL_CONTEXT_FLAGS_DEBUG` takes precedence over `GH_FORCE_GL_CONTEXT_FLAGS_NO_DEBUG`.
 * `GH_FORCE_GL_CONTEXT_FLAGS_NO_FORWARD_COMPAT`: set to non-zero to disable forwadr-compatible contexts.
 * `GH_FORCE_GL_CONTEXT_FLAGS_FORWARD_COMPAT`: set to non-zero to force forward-compatible contexts. `GH_FORCE_GL_CONTEXT_FLAGS_FORWARD_COMPAT` takes precedence over `GH_FORCE_GL_CONTEXT_FLAGS_NO_FORWARD_COMPAT`.
-* `GH_FORCE_GL_CONTEXT_FLAGS_NO_ERROR`: set to non-zero to force a no-error context (as defined in [`GL_KHR_NO_ERRORi`](https://registry.khronos.org/OpenGL/extensions/KHR/KHR_no_error.txt)).
+* `GH_FORCE_GL_CONTEXT_FLAGS_NO_ERROR`: set to non-zero to force a no-error context (as defined in [`GL_KHR_NO_ERROR`](https://registry.khronos.org/OpenGL/extensions/KHR/KHR_no_error.txt)).
 * `GH_FORCE_GL_CONTEXT_FLAGS_ERROR`: set to non-zero to force removal of the no-error context flag if the application may request that.
 
 The GL version overrides are applied in the order `min,max,exact`. Set a component to `-1` for no override.
