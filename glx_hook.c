@@ -1175,7 +1175,7 @@ swapbuffer_omission_do_swap(GH_swapbuffer_omission_t *swo)
 		}
 		swo->swapbuffers = interval / GH_SWAP_OMISSION_FRAMES_AVG;
 
-		printf("XXX %d %d cpu: %lu, gpu: %lu\n", swo->swapbuffers, interval, cpu, gpu);
+		/*printf("XXX %d %d cpu: %lu, gpu: %lu\n", swo->swapbuffers, interval, cpu, gpu);*/
 	}
 	do_swap = (++swo->swapbuffer_cnt >= swo->swapbuffers);
 	return do_swap;
