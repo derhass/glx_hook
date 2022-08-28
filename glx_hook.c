@@ -838,6 +838,14 @@ timestamp_set(GH_timestamp *ts, GH_frametime *rs, GH_frametime_mode mode)
 	}
 }
 
+static void
+frametime_init(GH_frametime *rs)
+{
+	rs->cpu = 0;
+	rs->gl  = 0;
+	rs->gpu = 0;
+}
+
 static int
 frametimes_gl_init()
 {
@@ -1051,18 +1059,26 @@ frametimes_after_swap(GH_frametimes *ft)
  * SWAPBUFFER OMISSION (very experimental)                                 *
  ***************************************************************************/
 
+#define GH_SWAP_OMISSION_FRAMES_TOT 	5
+#define GH_SWAP_OMISSION_FRAMES_AVG	3
+
 typedef struct {
 	int swapbuffers;
 	int swapbuffer_cnt;
 	int latency_mode;
 	int flush_mode;
+	int measure_mode;
 	uint64_t min_swap_time;
-	uint64_t prev_swap_time;
+	GH_timestamp prev_frame_ts[GH_SWAP_OMISSION_FRAMES_TOT][2];
+	GH_frametime prev_frames[GH_SWAP_OMISSION_FRAMES_TOT][2];
+	int prev_intervals[GH_SWAP_OMISSION_FRAMES_TOT];
+	unsigned int cur_pos;
 } GH_swapbuffer_omission_t;
 
 static void
 swapbuffer_omission_init(GH_swapbuffer_omission_t *swo)
 {
+	int i;
 	int min_swap_usecs = get_envi("GH_MIN_SWAP_USECS",0);
 	swo->swapbuffers=get_envi("GH_SWAPBUFFERS",0);
 	swo->min_swap_time = 0;
@@ -1072,14 +1088,40 @@ swapbuffer_omission_init(GH_swapbuffer_omission_t *swo)
 	}
 	swo->latency_mode = get_envi("GH_SWAP_OMISSION_LATENCY", 0);
 	swo->flush_mode = get_envi("GH_SWAP_OMISSION_FLUSH", 1);
+	swo->measure_mode =  get_envi("GH_SWAP_OMISSION_MEASURE", 3);
 	swo->swapbuffer_cnt=0;
-	swo->prev_swap_time = 0;
+	swo->cur_pos = 0;
+
+	for (i=0; i<GH_SWAP_OMISSION_FRAMES_TOT; i++) {
+		timestamp_init(&swo->prev_frame_ts[i][0]);
+		timestamp_init(&swo->prev_frame_ts[i][1]);
+		frametime_init(&swo->prev_frames[i][0]);
+		frametime_init(&swo->prev_frames[i][1]);
+		swo->prev_intervals[i] = 1;
+	}
+}
+
+static int
+swapbuffer_omission_init_gl_funcs(void)
+{
+	GH_GET_GL_PROC_OR_FAIL(glGenQueries, GH_MSG_WARNING, -1);
+	GH_GET_GL_PROC_OR_FAIL(glDeleteQueries, GH_MSG_WARNING, -1);
+	GH_GET_GL_PROC_OR_FAIL(glGetInteger64v, GH_MSG_WARNING, -1);
+	GH_GET_GL_PROC_OR_FAIL(glQueryCounter, GH_MSG_WARNING, -1);
+	GH_GET_GL_PROC_OR_FAIL(glGetQueryObjectui64v, GH_MSG_WARNING, -1);
+	return 0;
 }
 
 static void
 swapbuffer_omission_init_gl(GH_swapbuffer_omission_t *swo)
 {
-	(void)swo;
+	if (swo->min_swap_time > 0) {
+		if (swapbuffer_omission_init_gl_funcs()) {
+			GH_verbose(GH_MSG_WARNING,"adaptive swapbuffer omission not availabe without timer query, disabling it");
+			swo->min_swap_time = 0;
+			swo->swapbuffers = get_envi("GH_SWAPBUFFERS",0);;
+		}
+	}
 }
 
 static int
@@ -1087,14 +1129,55 @@ swapbuffer_omission_do_swap(GH_swapbuffer_omission_t *swo)
 {
 	int do_swap;
 	if (swo->min_swap_time > 0) {
-		struct timespec ts_now;
-		uint64_t now;
-		clock_gettime(CLOCK_MONOTONIC, &ts_now);
-		now = (uint64_t)ts_now.tv_sec  * (uint64_t)1000000000UL + (uint64_t)ts_now.tv_nsec;
-		do_swap = (now - swo->prev_swap_time >= swo->min_swap_time);
-	} else {
-		do_swap = (++swo->swapbuffer_cnt >= swo->swapbuffers);
+		unsigned int i,idx;
+		uint64_t cpu = 0;
+		uint64_t gpu = 0;
+		uint64_t val;
+		timestamp_set(&swo->prev_frame_ts[swo->cur_pos][1],&swo->prev_frames[swo->cur_pos][1], GH_FRAMETIME_CPU_GPU);
+		if (++swo->cur_pos >= GH_SWAP_OMISSION_FRAMES_TOT) {
+			swo->cur_pos = 0;
+		}
+		idx = swo->cur_pos;
+
+		for (i=0; i<GH_SWAP_OMISSION_FRAMES_AVG; i++) {
+			cpu += (swo->prev_frames[idx][1].cpu - swo->prev_frames[idx][0].cpu);
+			gpu += (swo->prev_frames[idx][1].gpu - swo->prev_frames[idx][0].gpu);
+			if (++idx >= GH_SWAP_OMISSION_FRAMES_TOT) {
+				idx = 0;
+			}
+		}
+		cpu /= GH_SWAP_OMISSION_FRAMES_AVG;
+		gpu /= GH_SWAP_OMISSION_FRAMES_AVG;
+		switch (swo->measure_mode) {
+			case 1:
+				val=cpu;
+				break;
+			case 2:
+				val=gpu;
+				break;
+			default:
+				val = (cpu>gpu)?cpu:gpu;
+		}
+		if (val < 1000) {
+			val = 1000;
+		}
+		int interval  = (int)(swo->min_swap_time/val);
+		if (interval <= 0) {
+			interval = 1;
+		}
+		swo->prev_intervals[swo->cur_pos]=interval;
+		idx = swo->cur_pos + GH_SWAP_OMISSION_FRAMES_TOT - GH_SWAP_OMISSION_FRAMES_AVG + 1;
+		for (i=0; i<(GH_SWAP_OMISSION_FRAMES_AVG-1); i++) {
+			if (idx >= GH_SWAP_OMISSION_FRAMES_TOT) {
+				idx -= GH_SWAP_OMISSION_FRAMES_TOT;
+			}
+			interval += swo->prev_intervals[idx++];
+		}
+		swo->swapbuffers = interval / GH_SWAP_OMISSION_FRAMES_AVG;
+
+		printf("XXX %d %d cpu: %lu, gpu: %lu\n", swo->swapbuffers, interval, cpu, gpu);
 	}
+	do_swap = (++swo->swapbuffer_cnt >= swo->swapbuffers);
 	return do_swap;
 }
 
@@ -1118,20 +1201,20 @@ swapbuffer_omission_swap_finished(GH_swapbuffer_omission_t *swo, int did_swap)
 {
 	if (did_swap) {
 		swo->swapbuffer_cnt = 0;
-		if (swo->min_swap_time > 0) {
-			struct timespec ts_now;
-			uint64_t now;
-			clock_gettime(CLOCK_MONOTONIC, &ts_now);
-			now = (uint64_t)ts_now.tv_sec  * (uint64_t)1000000000UL + (uint64_t)ts_now.tv_nsec;
-			swo->prev_swap_time = now;
-		}
+	}
+	if (swo->min_swap_time > 0) {
+		timestamp_set(&swo->prev_frame_ts[swo->cur_pos][0],&swo->prev_frames[swo->cur_pos][0], GH_FRAMETIME_CPU_GPU);
 	}
 }
 
 static void
 swapbuffer_omission_destroy(GH_swapbuffer_omission_t *swo)
 {
-	(void)swo;
+	int i;
+	for (i=0; i<GH_SWAP_OMISSION_FRAMES_TOT; i++) {
+		timestamp_cleanup(&swo->prev_frame_ts[i][0]);
+		timestamp_cleanup(&swo->prev_frame_ts[i][1]);
+	}
 }
 
 /***************************************************************************

@@ -192,11 +192,15 @@ to not miss any display frames.
 
 There is also an experimental - and very crude - adaptive mode which can be enabled by setting
 `GH_MIN_SWAP_USECS` to a value above zero. If enabled, the `GH_SWAPBUFFERS` setting is
-ignored, and the swapbuffer operation is omitted if less than this amount of time
-has passed since the last buffer swap was actually carried out. Note that this mode
+ignored, and the swapbuffer omission value is calculated based on the frame timeings
+of the previous frames. THe idea is to set the value to the frametime of your monitor
+value's refresh rate, or somewaht lower, eg. something in the range of `14000` to `16600`
+for a 60Hz display. You can set `GH_SWAP_OMISSION_MEASURE` to either `1` to use CPU
+frame times, `2` to use GPU frame times, or `3` to use the maximum of both.
+Note that this mode
 can be very unstable, depending on the app and also the GL driver. If might help to
 test it  combination with various latency limiter and swap omission flush modes, and also
-different threshold durations.
+different threshold durations as well as measurement modes.
 
 The interaction between the latency limiter and swap buffer omission can be controlled
 by the `GH_SWAP_OMISSION_LATENCY` option as follows:
