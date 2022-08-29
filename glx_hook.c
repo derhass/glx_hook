@@ -1059,8 +1059,8 @@ frametimes_after_swap(GH_frametimes *ft)
  * SWAPBUFFER OMISSION (very experimental)                                 *
  ***************************************************************************/
 
-#define GH_SWAP_OMISSION_FRAMES_TOT 	5
-#define GH_SWAP_OMISSION_FRAMES_AVG	3
+#define GH_SWAP_OMISSION_FRAMES_TOT 	6
+#define GH_SWAP_OMISSION_FRAMES_AVG	4
 
 typedef struct {
 	int swapbuffers;
@@ -1068,6 +1068,7 @@ typedef struct {
 	int latency_mode;
 	int flush_mode;
 	int measure_mode;
+	int limits[2];
 	uint64_t min_swap_time;
 	GH_timestamp prev_frame_ts[GH_SWAP_OMISSION_FRAMES_TOT][2];
 	GH_frametime prev_frames[GH_SWAP_OMISSION_FRAMES_TOT][2];
@@ -1088,7 +1089,15 @@ swapbuffer_omission_init(GH_swapbuffer_omission_t *swo)
 	}
 	swo->latency_mode = get_envi("GH_SWAP_OMISSION_LATENCY", 0);
 	swo->flush_mode = get_envi("GH_SWAP_OMISSION_FLUSH", 1);
-	swo->measure_mode =  get_envi("GH_SWAP_OMISSION_MEASURE", 3);
+	swo->measure_mode = get_envi("GH_SWAP_OMISSION_MEASURE", 3);
+	swo->limits[0] = get_envi("GH_SWAP_OMISSION_MIN",1);
+	swo->limits[1] = get_envi("GH_SWAP_OMISSION_MAX",4);
+	if (swo->limits[0] < 1) {
+		swo->limits[0] = 1;
+	}
+	if (swo->limits[1] < swo->limits[0]) {
+		swo->limits[1] = swo->limits[0];
+	}
 	swo->swapbuffer_cnt=0;
 	swo->cur_pos = 0;
 
@@ -1162,8 +1171,11 @@ swapbuffer_omission_do_swap(GH_swapbuffer_omission_t *swo)
 			val = 1000;
 		}
 		int interval  = (int)(swo->min_swap_time/val);
-		if (interval <= 0) {
-			interval = 1;
+		if (interval < swo->limits[0]) {
+			interval = swo->limits[0];
+		}
+		if (interval > swo->limits[1]) {
+			interval = swo->limits[1];
 		}
 		swo->prev_intervals[swo->cur_pos]=interval;
 		idx = swo->cur_pos + GH_SWAP_OMISSION_FRAMES_TOT - GH_SWAP_OMISSION_FRAMES_AVG + 1;
