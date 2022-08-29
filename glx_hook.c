@@ -1059,8 +1059,7 @@ frametimes_after_swap(GH_frametimes *ft)
  * SWAPBUFFER OMISSION (very experimental)                                 *
  ***************************************************************************/
 
-#define GH_SWAP_OMISSION_FRAMES_TOT 	6
-#define GH_SWAP_OMISSION_FRAMES_AVG	4
+#define GH_SWAP_OMISSION_FRAMES_MAX 16
 
 typedef struct {
 	int swapbuffers;
@@ -1070,10 +1069,12 @@ typedef struct {
 	int measure_mode;
 	int limits[2];
 	uint64_t min_swap_time;
-	GH_timestamp prev_frame_ts[GH_SWAP_OMISSION_FRAMES_TOT][2];
-	GH_frametime prev_frames[GH_SWAP_OMISSION_FRAMES_TOT][2];
-	int prev_intervals[GH_SWAP_OMISSION_FRAMES_TOT];
+	GH_timestamp prev_frame_ts[GH_SWAP_OMISSION_FRAMES_MAX][2];
+	GH_frametime prev_frames[GH_SWAP_OMISSION_FRAMES_MAX][2];
+	int prev_intervals[GH_SWAP_OMISSION_FRAMES_MAX];
 	unsigned int cur_pos;
+	unsigned int measure_frames_tot;
+	unsigned int measure_frames_avg;
 } GH_swapbuffer_omission_t;
 
 static void
@@ -1100,8 +1101,21 @@ swapbuffer_omission_init(GH_swapbuffer_omission_t *swo)
 	}
 	swo->swapbuffer_cnt=0;
 	swo->cur_pos = 0;
+	swo->measure_frames_tot = get_envui("GH_SWAP_OMISSION_MEASURE_TOT", 6U);
+	swo->measure_frames_avg = get_envui("GH_SWAP_OMISSION_MEASURE_AVG", 4U);
+	if (swo->measure_frames_tot > GH_SWAP_OMISSION_FRAMES_MAX) {
+		swo->measure_frames_tot = GH_SWAP_OMISSION_FRAMES_MAX;
+	} else if (swo->measure_frames_tot < 2) {
+		swo->measure_frames_tot = 2;
+	}
+	if (swo->measure_frames_avg >= swo->measure_frames_tot) {
+		swo->measure_frames_avg = swo->measure_frames_tot - 1U;
+	}
+	if (swo->measure_frames_avg < 1) {
+		swo->measure_frames_avg = 1;
+	}
 
-	for (i=0; i<GH_SWAP_OMISSION_FRAMES_TOT; i++) {
+	for (i=0; i<GH_SWAP_OMISSION_FRAMES_MAX; i++) {
 		timestamp_init(&swo->prev_frame_ts[i][0]);
 		timestamp_init(&swo->prev_frame_ts[i][1]);
 		frametime_init(&swo->prev_frames[i][0]);
@@ -1143,20 +1157,20 @@ swapbuffer_omission_do_swap(GH_swapbuffer_omission_t *swo)
 		uint64_t gpu = 0;
 		uint64_t val;
 		timestamp_set(&swo->prev_frame_ts[swo->cur_pos][1],&swo->prev_frames[swo->cur_pos][1], GH_FRAMETIME_CPU_GPU);
-		if (++swo->cur_pos >= GH_SWAP_OMISSION_FRAMES_TOT) {
+		if (++swo->cur_pos >= swo->measure_frames_tot) {
 			swo->cur_pos = 0;
 		}
 		idx = swo->cur_pos;
 
-		for (i=0; i<GH_SWAP_OMISSION_FRAMES_AVG; i++) {
+		for (i=0; i<swo->measure_frames_avg; i++) {
 			cpu += (swo->prev_frames[idx][1].cpu - swo->prev_frames[idx][0].cpu);
 			gpu += (swo->prev_frames[idx][1].gpu - swo->prev_frames[idx][0].gpu);
-			if (++idx >= GH_SWAP_OMISSION_FRAMES_TOT) {
+			if (++idx >= swo->measure_frames_tot) {
 				idx = 0;
 			}
 		}
-		cpu /= GH_SWAP_OMISSION_FRAMES_AVG;
-		gpu /= GH_SWAP_OMISSION_FRAMES_AVG;
+		cpu /= swo->measure_frames_avg;
+		gpu /= swo->measure_frames_avg;
 		switch (swo->measure_mode) {
 			case 1:
 				val=cpu;
@@ -1178,14 +1192,14 @@ swapbuffer_omission_do_swap(GH_swapbuffer_omission_t *swo)
 			interval = swo->limits[1];
 		}
 		swo->prev_intervals[swo->cur_pos]=interval;
-		idx = swo->cur_pos + GH_SWAP_OMISSION_FRAMES_TOT - GH_SWAP_OMISSION_FRAMES_AVG + 1;
-		for (i=0; i<(GH_SWAP_OMISSION_FRAMES_AVG-1); i++) {
-			if (idx >= GH_SWAP_OMISSION_FRAMES_TOT) {
-				idx -= GH_SWAP_OMISSION_FRAMES_TOT;
+		idx = swo->cur_pos + swo->measure_frames_tot - swo->measure_frames_avg + 1;
+		for (i=0; i<(swo->measure_frames_avg-1); i++) {
+			if (idx >= swo->measure_frames_tot) {
+				idx -= swo->measure_frames_tot;
 			}
 			interval += swo->prev_intervals[idx++];
 		}
-		swo->swapbuffers = interval / GH_SWAP_OMISSION_FRAMES_AVG;
+		swo->swapbuffers = interval / swo->measure_frames_avg;
 
 		/*printf("XXX %d %d cpu: %lu, gpu: %lu\n", swo->swapbuffers, interval, cpu, gpu);*/
 	}
@@ -1223,7 +1237,7 @@ static void
 swapbuffer_omission_destroy(GH_swapbuffer_omission_t *swo)
 {
 	int i;
-	for (i=0; i<GH_SWAP_OMISSION_FRAMES_TOT; i++) {
+	for (i=0; i<GH_SWAP_OMISSION_FRAMES_MAX; i++) {
 		timestamp_cleanup(&swo->prev_frame_ts[i][0]);
 		timestamp_cleanup(&swo->prev_frame_ts[i][1]);
 	}

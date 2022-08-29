@@ -199,6 +199,9 @@ for a 60Hz display. You can set `GH_SWAP_OMISSION_MEASURE` to either `1` to use 
 frame times, `2` to use GPU frame times, or `3` to use the maximum of both.
 The actual swap buffer omission value is clamped between `GH_SWAP_OMISSION_MIN' (default `1`,
 meaning no omission), and `GH_SWAP_OMISSION_MAX` (default `4`).
+The measurement is capturing the famre times over the last `GH_SWAP_OMISSION_MEASURE_TOT` fames
+(default: `6`, min: `2`, max: `16`) and using the average of the oldest `GH_SWAP_OMISSION_MEASURE_AVG`
+frames of these (default: `4`, min: `1`, max: `total frames - 1`).
 Note that this mode
 can be very unstable, depending on the app and also the GL driver. If might help to
 test it in combination with various latency limiter and swap omission flush modes, and also
