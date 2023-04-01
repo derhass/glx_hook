@@ -1,5 +1,6 @@
 glx_hook.so
 glx_hook_bare.so
+dlsym_wrapper.so
 *~
 *.swp
 

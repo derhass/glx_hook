@@ -9,8 +9,8 @@ doesn't allow you to override this.
 With the proprietary NVIDIA Linux driver, the nvidia-settings and
 `__GL_SYNC_TO_VBLANK` environment variable are actually overriden by an
 application using
-[`GLX_EXT_swap_control`](https://www.opengl.org/registry/specs/EXT/swap_control.txt),
-[`GLX_SGI_swap_control`](https://www.opengl.org/registry/specs/SGI/swap_control.txt)
+[`GLX_EXT_swap_control`](https://registry.khronos.org/OpenGL/extensions/EXT/EXT_swap_control.txt),
+[`GLX_SGI_swap_control`](https://registry.khronos.org/OpenGL/extensions/SGI/GLX_SGI_swap_control.txt)
 or `GLX_MESA_swap_control` extensions.
 
 This tool works by exchanging the
@@ -48,7 +48,7 @@ For actually injection such calls, have a look at the experimental option
 NVidia is promoting a feature called "adaptive vsync" where a "late" buffer
 swap is done immediately instead of being delayed to the next sync interval.
 This feature is exposed via the
-[`GLX_EXT_swap_control_tear`](https://www.opengl.org/registry/specs/EXT/glx_swap_control_tear.txt)
+[`GLX_EXT_swap_control_tear`](https://registry.khronos.org/OpenGL/extensions/EXT/GLX_EXT_swap_control_tear.txt)
 extension. If this
 is present, negative intervals enable adaptive vsync with the absolute
 value beeing the swap interval. The `GH_SWAP_TEAR` environment variable can
@@ -107,7 +107,7 @@ supported:
 * `0`: no frametime measurements (the default)
 * `1`: measure frametime on CPU only
 * `2`: measure frametimes on CPU and GPU (requires a context >= 3.3, or supporting the
-[`GL_ARB_timer_query`](https://www.opengl.org/registry/specs/ARB/timer_query.txt)
+[`GL_ARB_timer_query`](https://registry.khronos.org/OpenGL/extensions/ARB/ARB_timer_query.txt)
 extension)
 
 Use `GH_FRAMETIME_DELAY=$n` to set the delay for the timer queries (default: 10 frames).
@@ -154,7 +154,7 @@ values might be used:
 * `0`: limit to 0, force a sync right _before_ the buffer swap
 * `>0`: limit the number of pending frames to `$n` (requires a context >= 3.2,
 or supporting the
-[`GL_ARB_sync`](https://www.opengl.org/registry/specs/ARB/sync.txt)
+[`GL_ARB_sync`](https://registry.khronos.org/OpenGL/extensions/ARB/ARB_sync.txt)
 extension)
 
 This can be helpful in situations where you experience stuttering in a GL application. Preferably,
@@ -187,8 +187,43 @@ is set to a non-zero value
 Set `GH_SWAPBUFFERS=$n` to only execute every `$n`-th buffer swap. This might be
 useful for games where all game logic is implemented in the same loop as
 the rendering, and you want vsync on but stilll a higher frequency for the loop.
-Currently, there is no adaptive mode, so you need to have`$n` times the framerate
+In this mode, you need to reach a frame rate of  `$n` times the refresh
 to not miss any display frames.
+
+There is also an experimental - and very crude - adaptive mode which can be enabled by setting
+`GH_MIN_SWAP_USECS` to a value above zero. If enabled, the `GH_SWAPBUFFERS` setting is
+ignored, and the swapbuffer omission value is calculated based on the frame timeings
+of the previous frames. The idea is to set the value to the frametime of your monitor
+value's refresh rate, or somewhat lower, eg. something in the range of `14000` to `16600`
+for a 60Hz display. You can set `GH_SWAP_OMISSION_MEASURE` to either `1` to use CPU
+frame times, `2` to use GPU frame times, or `3` to use the maximum of both.
+The actual swap buffer omission value is clamped between `GH_SWAP_OMISSION_MIN' (default `1`,
+meaning no omission), and `GH_SWAP_OMISSION_MAX` (default `4`).
+The measurement is capturing the famre times over the last `GH_SWAP_OMISSION_MEASURE_TOT` fames
+(default: `6`, min: `2`, max: `16`) and using the average of the oldest `GH_SWAP_OMISSION_MEASURE_AVG`
+frames of these (default: `4`, min: `1`, max: `total frames - 1`).
+Note that this mode
+can be very unstable, depending on the app and also the GL driver. If might help to
+test it in combination with various latency limiter and swap omission flush modes, and also
+different threshold durations as well as measurement modes.
+
+The interaction between the latency limiter and swap buffer omission can be controlled
+by the `GH_SWAP_OMISSION_LATENCY` option as follows:
+* `0`: apply the latency limiter on every swapbuffer operation which is actually carried out (the default)
+* `1`: apply the letancy limiter to every swapbuffer operation the application attempts to do, including the omitted ones
+
+Furthermore, you can control the flush behavior at omitted swapbuffer operations via
+the `GH_SWAP_OMISSION_FLUSH` variable:
+* `0`: do nothing
+* `1`: do a flush via `glFlush` (the default)
+* `2`: do a full sync via `glFinish`
+When the latency limiter is enabled and `GH_SWAP_OMISSION_LATENCY` is set to `1`,
+you probably should set `GH_SWAP_OMISSION_FLUSH` to 0 to avoid additional syncs
+the latency limiter already cares about.
+
+Frametime measurements will always measure each individual frame the application
+attempted to render, and is not (directly) affected by the swap buffer omission
+settings.
 
 #### Sleep injection
 
@@ -199,7 +234,7 @@ a slower machine.
 #### GL Context attribute overrides
 
 You can override the attributes for GL context creation. This will require the
-[`GLX_ARB_create_context`](https://www.khronos.org/registry/OpenGL/extensions/ARB/GLX_ARB_create_context.txt)
+[`GLX_ARB_create_context`](https://registry.khronos.org/OpenGL/extensions/ARB/GLX_ARB_create_context.txt)
 extension. The following overrides are defined:
 * `GH_FORCE_MIN_GL_VERSION_MAJOR`: set the the minimum GL major version number to request
 * `GH_FORCE_MIN_GL_VERSION_MINOR`: set the the minimum GL minor version number to request
@@ -213,6 +248,8 @@ extension. The following overrides are defined:
 * `GH_FORCE_GL_CONTEXT_FLAGS_DEBUG`: set to non-zero to force debug contexts. `GH_FORCE_GL_CONTEXT_FLAGS_DEBUG` takes precedence over `GH_FORCE_GL_CONTEXT_FLAGS_NO_DEBUG`.
 * `GH_FORCE_GL_CONTEXT_FLAGS_NO_FORWARD_COMPAT`: set to non-zero to disable forwadr-compatible contexts.
 * `GH_FORCE_GL_CONTEXT_FLAGS_FORWARD_COMPAT`: set to non-zero to force forward-compatible contexts. `GH_FORCE_GL_CONTEXT_FLAGS_FORWARD_COMPAT` takes precedence over `GH_FORCE_GL_CONTEXT_FLAGS_NO_FORWARD_COMPAT`.
+* `GH_FORCE_GL_CONTEXT_FLAGS_NO_ERROR`: set to non-zero to force a no-error context (as defined in [`GL_KHR_NO_ERROR`](https://registry.khronos.org/OpenGL/extensions/KHR/KHR_no_error.txt)).
+* `GH_FORCE_GL_CONTEXT_FLAGS_ERROR`: set to non-zero to force removal of the no-error context flag if the application may request that.
 
 The GL version overrides are applied in the order `min,max,exact`. Set a component to `-1` for no override.
 Note: it is advised to set both the major and minor version, the version comparision will then take
@@ -259,9 +296,7 @@ on the second character as follows:
 
 ### INSTALLATION:
 
-This requires glibc, as we call some internal glibc functions not intended to
-be called. Tested with glibc-2.13 (from debian wheezy), glibc-2.24
-(from debian stretch) and glibc-2.28 (from debian buster). To build, just type
+To build, just type
 
     $ make
 
@@ -269,6 +304,57 @@ be called. Tested with glibc-2.13 (from debian wheezy), glibc-2.24
 Finally copy the `glx_hook.so` to where you like it. For a debug build, do
 
     $ make DEBUG=1
+
+glx_hook requires glibc, as we rely on some glibc internas.
+Tested with glibc-2.13 (from debian wheezy), glibc-2.24
+(from debian stretch) and glibc-2.28 (from debian buster).
+
+#### Hooking mechanism
+
+glx_hook works by exporting all the relevant GL functions in the shared object,
+as well as hooking into `dlsym()` (and optionally also `dlvsym()`) as well as
+`glXGetProcAddress`/`glXGetProcAddressARB`.
+
+Howver, hooking `dlsym()`/`dlvsym()` can be done via different methods,
+The method is selected at compile time via the `METHOD` variable:
+
+    $ make METHOD=2
+
+The following methods are available:
+
+* `1`: Deprecated: Use the internal `_dl_sym()` function of glibc. However, this function
+  is not exported any more since glibc-2.34, so this approach won't work with
+  newer linux distros beginning some time around autumn of 2021.
+  Using this method allows for hooking `dlsym()` and `dlvsym`.
+
+* `2`: Use the `dlvsym()` function which is an official part of the glibc API and ABI.
+  To query the original `dlsym` via `dlvsym`, we need to know the exact version
+  of the symbol, which in glibc is dependent on the platform.
+  glx_hook currently supports the platforms x86_64 and i386 via this method,
+  but other platforms can easyly be added. Just do a
+  `grep 'GLIBC_.*\bdlsym\b' -r sysdeps` in the root folder of the glibc source.
+  Using this methid allows for hooking `dlsym()`, but not `dlvsym`.
+  This is currently the default.
+ 
+* `3`: Use a second helper library `dlsym_wrapper.so`. That file will be automatically
+  built if this mode is selected. It must be placed in the same folder where
+  the `glx_hook.so` is located, and will be dynamically loaded at runtime when
+  `glx_hook.so` initializes itself. Using this method allows for hooking `dlsym()` and `dlvsym`.
+  It is probably the most flexible approach, but it adds some complexity.
+
+When using the method 2, this means that we end up getting the symbol
+from `glibc` even if another hooking library is injected to the same process.
+By default, glx_hooks plays nice and actually uses the `dlsym()` queried by
+`dlvsym()` to again query for the unversioned `dlsym`. This behavior can
+be prevented by setting the `GH_ALLOW_DLSYM_REDIRECTION` environment variable
+to 0. It is only relevant for `METHOD=2`.
+
+You can control wether we shall also hook the `dlsym()` and `dlvsym()` methods
+dynamically, meaning an application calling (our) `dlsym()` to query for `"dlsym"` itself
+should be redirected to our implementation. Use `GH_HOOK_DLSYM_DYNAMICALLY=1` or
+`GH_HOOK_DLVSYM_DYNAMICALLY=1` to enable is. Bu default, this is disabled, as this
+creates lots of shenanigans, especially if we are not the only `dlsym`/`dlvsym` hook
+around. Use with care.
 
 ### EXAMPLES
 

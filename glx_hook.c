@@ -19,12 +19,51 @@
 #include <GL/glext.h>
 #endif
 
+#include "dlsym_wrapper.h"
+
+#ifdef __GLIBC__
+#if (__GLIBC__ > 2) || ( (__GLIBC__ == 2 ) && (__GLIBC_MINOR__ >= 34))
+/* glibc >= 2.34 does not export _dl_sym() any more, we MUST use the dlvsym approach */
+#if (GH_DLSYM_METHOD == 1) 
+#error GH_DLSYM_METHOD 1 is not available with this libc version
+#endif
+#endif
+#endif
+
 /* we use this value as swap interval to mark the situation that we should
  * not set the swap interval at all. Note that with
  * GLX_EXT_swap_control_tear, negative intervals are allowed, and the
  * absolute value specifies the real interval, so we use just INT_MIN to
  * avoid conflicts with values an application might set. */
 #define GH_SWAP_DONT_SET	INT_MIN
+
+/***************************************************************************
+ * GH_DLSYM_METHOD selection                                               *
+ ***************************************************************************/
+
+/* supported methods:
+ * 0: _dl_sym()
+ * 1: dlvsym()
+ * 2: dlsym_wrapper.so
+ * See README.md for details
+ */
+#if (GH_DLSYM_METHOD == 1) /* METHOD 1*/
+#define GH_DLSYM_NEED_LOCK /* METHOD 2*/
+#elif (GH_DLSYM_METHOD == 2)
+#if defined(__x86_64__) /* platforms */
+#define GH_DLSYM_ABI_VERSION "2.2.5"
+#elif defined(__i386__)
+#define GH_DLSYM_ABI_VERSION "2.0"
+#else
+/* if you need support for your platform, get the exact version for dlsym
+ * for the glibc ABI of your platform */
+#error platform not supported
+#endif /* platforms */
+#elif (GH_DLSYM_METHOD == 3) /* METHOD 3*/
+#define GH_DLSYM_NEED_LOCK
+#else
+#error GH_DLSYM_METHOD not supported
+#endif /* GH_DLSYM_METHOD */
 
 /***************************************************************************
  * helpers                                                                 *
@@ -192,15 +231,12 @@ static void GH_verbose(int level, const char *fmt, ...)
 typedef void (*GH_fptr)();
 typedef void * (*GH_resolve_func)(const char *);
 
+#ifdef GH_DLSYM_NEED_LOCK
 /* mutex used during GH_dlsym_internal () */
 static pthread_mutex_t GH_mutex=PTHREAD_MUTEX_INITIALIZER;
+#endif
 
-/* Mutex for the function pointers. We only guard the
- * if (ptr == NULL) ptr=...; part. The pointers will never
- * change after being set to a non-NULL value for the first time,
- * so it is safe to dereference them without locking */
-static pthread_mutex_t GH_fptr_mutex=PTHREAD_MUTEX_INITIALIZER;
-
+#if (GH_DLSYM_METHOD == 1)
 /* THIS IS AN EVIL HACK: we directly call _dl_sym() of the glibc
  * NOTE: the approrpiate function prototype could be
  *       extern void *_dl_sym(void *, const char *, void (*)() );
@@ -212,6 +248,114 @@ static pthread_mutex_t GH_fptr_mutex=PTHREAD_MUTEX_INITIALIZER;
  *       as broken as before from a C correctness point of view,
  *       but the compiler won't notice any more... ;) */
 extern void *_dl_sym(void *, const char *, void* (*)(void *, const char *) );
+#elif (GH_DLSYM_METHOD == 3)
+/* Use the dlsym_wrapper. We can use dlopen(), but we can not
+ * use dlsym() or dlvsym(), as these functions are hooked by ourselves.
+ * However, dlsym_wrapper will execute an intialization function when
+ * dlopen() is called. The trick is the we load dlsym_wrapper.so
+ * with RTLD_LOCAL | RTLD_DEEPBIND, so that it gets its own private
+ * linker map to the libdl.so, without falling back on the dlsym()
+ * defined here. It then forwards the pointer via an environment
+ * variable (as hex via printf %p format string) */
+static void *dlsym_wrapper_get(void* handle, const char *name)
+{
+	char dlsym_wrapper_name[4096];
+	void *wrapper;
+	const char * ptr_str;
+	void *res = NULL;
+	void *ptr = NULL;
+	Dl_info self;
+	size_t len;
+	char *pos;
+	size_t idx;
+	size_t slen;
+
+	(void)handle;
+	(void)name;
+
+	memset(&self,0, sizeof(self));
+	if (!dladdr(dlsym_wrapper_get, &self)) {
+		GH_verbose(GH_MSG_ERROR,"dlsym_wrapper: failed to find myself!\n");
+		return NULL;
+	}
+	if (!self.dli_fname) {
+		GH_verbose(GH_MSG_ERROR,"dlsym_wrapper: failed to find my path!\n");
+		return NULL;
+	}
+	GH_verbose(GH_MSG_DEBUG,"dlsym_wrapper: I am at '%s'\n", self.dli_fname);
+	len = strlen(self.dli_fname);
+	if (len >= sizeof(dlsym_wrapper_name)) {
+		GH_verbose(GH_MSG_ERROR,"dlsym_wrapper: my path '%s' is too long: %zu >= %zu\n", self.dli_fname, len, sizeof(dlsym_wrapper_name));
+		return NULL;
+	}
+	memcpy(dlsym_wrapper_name, self.dli_fname, len+1);
+	pos = strrchr(dlsym_wrapper_name, '/');
+	if (pos) {
+		idx = pos - dlsym_wrapper_name + 1;
+	} else {
+		idx = 0;
+	}
+	if (idx > len) {
+		GH_verbose(GH_MSG_ERROR,"dlsym_wrapper: failed to process my path '%s'\n", dlsym_wrapper_name);
+		return NULL;
+	}
+	len = sizeof(dlsym_wrapper_name) - idx;
+	slen = strlen(DLSYM_WRAPPER_NAME) + 1;
+	if (len < slen) {
+		GH_verbose(GH_MSG_ERROR,"dlsym_wrapper: failed to build path to the wrapper library: avail %zu < needed %zu\n", len, slen);
+		return NULL;
+	}
+	memcpy(dlsym_wrapper_name + idx, DLSYM_WRAPPER_NAME, slen);
+	GH_verbose(GH_MSG_ERROR,"dlsym_wrapper: wrapper library should be at '%s'\n", dlsym_wrapper_name);
+
+	if (getenv(DLSYM_WRAPPER_ENVNAME)) {
+		GH_verbose(GH_MSG_WARNING,"dlsym_wrapper: '%s' already defined, shouldn't be\n", DLSYM_WRAPPER_ENVNAME);
+	}
+	wrapper = dlopen(dlsym_wrapper_name, RTLD_LAZY | RTLD_LOCAL | RTLD_DEEPBIND | RTLD_NOLOAD);
+	if (wrapper) {
+		GH_verbose(GH_MSG_ERROR,"dlsym_wrapper: '%s' already loaded, this does not work!\n", dlsym_wrapper_name);
+		dlclose(wrapper);
+		return NULL;
+	}
+	wrapper = dlopen(dlsym_wrapper_name, RTLD_LAZY | RTLD_LOCAL | RTLD_DEEPBIND);
+	if (!wrapper) {
+		GH_verbose(GH_MSG_ERROR,"dlsym_wrapper: '%s' could not be loaded!\n", dlsym_wrapper_name);
+		return NULL;
+	}
+
+	ptr_str = getenv(DLSYM_WRAPPER_ENVNAME);
+	if (!ptr_str) {
+		GH_verbose(GH_MSG_ERROR,"dlsym_wrapper: '%s' was not defined by the wrapper library\n", DLSYM_WRAPPER_ENVNAME);
+		dlclose(wrapper);
+		return NULL;
+	}
+	GH_verbose(GH_MSG_DEBUG, "dlsym_wrapper: got '%s'='%s'\n", DLSYM_WRAPPER_ENVNAME, ptr_str);
+	if (sscanf(ptr_str, "%p", &ptr) == 1) {
+		if (ptr) {
+			GH_verbose(GH_MSG_DEBUG, "dlsym_wrapper: using %p as original dlsym()\n", ptr);
+			res = ptr;
+		} else {
+			GH_verbose(GH_MSG_ERROR, "dlsym_wrapper: original dlsym() pointer is invalid\n", ptr);
+		}
+	} else {
+		GH_verbose(GH_MSG_WARNING,"dlsym_wrapper: failed to parse pointer from '%s'='%s'\n", DLSYM_WRAPPER_ENVNAME, ptr_str);
+	}
+
+	dlclose(wrapper);
+	if (res) {
+		GH_verbose(GH_MSG_ERROR, "dlsym_wrapper: successfilly queried '%s' = %p\n", name, res);
+	} else {
+		GH_verbose(GH_MSG_ERROR, "dlsym_wrapper: failed to query '%s'\n", name);
+	}
+	return res;
+}
+#endif
+
+/* Mutex for the function pointers. We only guard the
+ * if (ptr == NULL) ptr=...; part. The pointers will never
+ * change after being set to a non-NULL value for the first time,
+ * so it is safe to dereference them without locking */
+static pthread_mutex_t GH_fptr_mutex=PTHREAD_MUTEX_INITIALIZER;
 
 /* Wrapper function called in place of dlsym(), since we intercept dlsym().
  * We use this ONLY to get the original dlsym() itself, all other symbol
@@ -221,9 +365,14 @@ static void *GH_dlsym_internal(void *handle, const char *name)
 {
 	void *ptr;
 
+#ifdef GH_DLSYM_NEED_LOCK
 	/* ARGH: we are bypassing glibc's locking for dlsym(), so we
 	 * must do this on our own */
 	pthread_mutex_lock(&GH_mutex);
+#endif
+
+#if (GH_DLSYM_METHOD == 1)
+	GH_verbose(GH_MSG_DEBUG, "using _dl_sym() method\n");
 
 	/* Third argument is the address of the caller, (glibc uses stack
 	 * unwinding internally to get this),  we just use the address of our
@@ -231,12 +380,23 @@ static void *GH_dlsym_internal(void *handle, const char *name)
 	 * behalf of the real application doing a dlsycm, but we do not
 	 *  care... */
 	ptr=_dl_sym(handle, name, GH_dlsym_internal);
+#elif (GH_DLSYM_METHOD == 2)
+	GH_verbose(GH_MSG_DEBUG, "using dlvsym() method\n");
+	ptr=dlvsym(handle, name, "GLIBC_" GH_DLSYM_ABI_VERSION);
+#elif (GH_DLSYM_METHOD == 3)
+	GH_verbose(GH_MSG_DEBUG, "using dlsym_wrapper.so method\n");
+	ptr=dlsym_wrapper_get(handle, name);
+#else
+#error GH_DLSYM_METHOD not supported
+#endif /* GH_DLSYM_METHOD */
 
+#ifdef GH_DLSYM_NEED_LOCK
 	pthread_mutex_unlock(&GH_mutex);
+#endif
 	return ptr;
 }
 
-/* Wrapper funtcion to query the original dlsym() function avoiding
+/* Wrapper funtcion to query an original function avoiding
  * recursively calls to the interceptor dlsym() below */
 static void *GH_dlsym_internal_next(const char *name)
 {
@@ -301,7 +461,50 @@ static PFNGLCLIENTWAITSYNCPROC GH_glClientWaitSync=NULL;
 /* Resolve an unintercepted symbol via the original dlsym() */
 static void *GH_dlsym_next(const char *name)
 {
-	return GH_dlsym(RTLD_NEXT, name);
+	if (GH_dlsym) {
+		return GH_dlsym(RTLD_NEXT, name);
+	}
+	GH_verbose(GH_MSG_WARNING, "failed to dynamically query '%s' because I don't have a dlsym\n", name);
+	return NULL;
+}
+
+/* Wrapper funtcion to query the original dlsym() function avoiding
+ * recursively calls to the interceptor dlsym() below */
+static void GH_dlsym_internal_dlsym()
+{
+	static const char *dlsymname = "dlsym";
+	static const char *dlvsymname = "dlvsym";
+	DLSYM_PROC_T orig_dlsym = NULL;
+	if (GH_dlsym == NULL) {
+		GH_dlsym = GH_dlsym_internal_next(dlsymname);
+		orig_dlsym = GH_dlsym;
+		if (GH_dlsym) {
+			void *ptr;
+			GH_verbose(GH_MSG_DEBUG_INTERCEPTION,"INTERNAL: (%s) = %p, ours is %p\n",dlsymname,GH_dlsym,dlsym);
+			ptr = GH_dlsym_next(dlsymname);
+			if (ptr != (void*)GH_dlsym) {
+				if (ptr) {
+					if (get_envi("GH_ALLOW_DLSYM_REDIRECTION", 1)) {
+						GH_verbose(GH_MSG_DEBUG_INTERCEPTION,"INTERNAL: (%s) = %p intercepted to %p\n",dlsymname,GH_dlsym,ptr);
+						GH_dlsym = ptr;
+					} else {
+						GH_verbose(GH_MSG_WARNING, "INTERNAL: (%s) = %p would be intercepted to %p but ignoring it\n",dlsymname,GH_dlsym,ptr);
+					}
+				} else {
+					GH_verbose(GH_MSG_WARNING,"INTERNAL: (%s) would be intercepted to NULL, ignoring it\n",dlsymname);
+				}
+			}
+		} else {
+			GH_verbose(GH_MSG_WARNING, "failed to dynamically query '%s'\n", dlsymname);
+		}
+	}
+
+	/* use the original dlsym, not a potentially redirected one */
+	if (orig_dlsym && (GH_dlvsym == NULL)) {
+		Dl_info info;
+		memset(&info,0,sizeof(info));
+		GH_dlvsym = orig_dlsym(RTLD_NEXT,dlvsymname);
+	}
 }
 
 /* Resolve an unintercepted symbol via the original dlsym(),
@@ -643,6 +846,14 @@ timestamp_set(GH_timestamp *ts, GH_frametime *rs, GH_frametime_mode mode)
 	}
 }
 
+static void
+frametime_init(GH_frametime *rs)
+{
+	rs->cpu = 0;
+	rs->gl  = 0;
+	rs->gpu = 0;
+}
+
 static int
 frametimes_gl_init()
 {
@@ -853,6 +1064,194 @@ frametimes_after_swap(GH_frametimes *ft)
 }
 
 /***************************************************************************
+ * SWAPBUFFER OMISSION (very experimental)                                 *
+ ***************************************************************************/
+
+#define GH_SWAP_OMISSION_FRAMES_MAX 16
+
+typedef struct {
+	int swapbuffers;
+	int swapbuffer_cnt;
+	int latency_mode;
+	int flush_mode;
+	int measure_mode;
+	int limits[2];
+	uint64_t min_swap_time;
+	GH_timestamp prev_frame_ts[GH_SWAP_OMISSION_FRAMES_MAX][2];
+	GH_frametime prev_frames[GH_SWAP_OMISSION_FRAMES_MAX][2];
+	int prev_intervals[GH_SWAP_OMISSION_FRAMES_MAX];
+	unsigned int cur_pos;
+	unsigned int measure_frames_tot;
+	unsigned int measure_frames_avg;
+} GH_swapbuffer_omission_t;
+
+static void
+swapbuffer_omission_init(GH_swapbuffer_omission_t *swo)
+{
+	int i;
+	int min_swap_usecs = get_envi("GH_MIN_SWAP_USECS",0);
+	swo->swapbuffers=get_envi("GH_SWAPBUFFERS",0);
+	swo->min_swap_time = 0;
+	if (min_swap_usecs > 0) {
+		swo->swapbuffers = 1;
+		swo->min_swap_time = (uint64_t)min_swap_usecs * (uint64_t)1000UL;
+	}
+	swo->latency_mode = get_envi("GH_SWAP_OMISSION_LATENCY", 0);
+	swo->flush_mode = get_envi("GH_SWAP_OMISSION_FLUSH", 1);
+	swo->measure_mode = get_envi("GH_SWAP_OMISSION_MEASURE", 3);
+	swo->limits[0] = get_envi("GH_SWAP_OMISSION_MIN",1);
+	swo->limits[1] = get_envi("GH_SWAP_OMISSION_MAX",4);
+	if (swo->limits[0] < 1) {
+		swo->limits[0] = 1;
+	}
+	if (swo->limits[1] < swo->limits[0]) {
+		swo->limits[1] = swo->limits[0];
+	}
+	swo->swapbuffer_cnt=0;
+	swo->cur_pos = 0;
+	swo->measure_frames_tot = get_envui("GH_SWAP_OMISSION_MEASURE_TOT", 6U);
+	swo->measure_frames_avg = get_envui("GH_SWAP_OMISSION_MEASURE_AVG", 4U);
+	if (swo->measure_frames_tot > GH_SWAP_OMISSION_FRAMES_MAX) {
+		swo->measure_frames_tot = GH_SWAP_OMISSION_FRAMES_MAX;
+	} else if (swo->measure_frames_tot < 2) {
+		swo->measure_frames_tot = 2;
+	}
+	if (swo->measure_frames_avg >= swo->measure_frames_tot) {
+		swo->measure_frames_avg = swo->measure_frames_tot - 1U;
+	}
+	if (swo->measure_frames_avg < 1) {
+		swo->measure_frames_avg = 1;
+	}
+
+	for (i=0; i<GH_SWAP_OMISSION_FRAMES_MAX; i++) {
+		timestamp_init(&swo->prev_frame_ts[i][0]);
+		timestamp_init(&swo->prev_frame_ts[i][1]);
+		frametime_init(&swo->prev_frames[i][0]);
+		frametime_init(&swo->prev_frames[i][1]);
+		swo->prev_intervals[i] = 1;
+	}
+}
+
+static int
+swapbuffer_omission_init_gl_funcs(void)
+{
+	GH_GET_GL_PROC_OR_FAIL(glGenQueries, GH_MSG_WARNING, -1);
+	GH_GET_GL_PROC_OR_FAIL(glDeleteQueries, GH_MSG_WARNING, -1);
+	GH_GET_GL_PROC_OR_FAIL(glGetInteger64v, GH_MSG_WARNING, -1);
+	GH_GET_GL_PROC_OR_FAIL(glQueryCounter, GH_MSG_WARNING, -1);
+	GH_GET_GL_PROC_OR_FAIL(glGetQueryObjectui64v, GH_MSG_WARNING, -1);
+	return 0;
+}
+
+static void
+swapbuffer_omission_init_gl(GH_swapbuffer_omission_t *swo)
+{
+	if (swo->min_swap_time > 0) {
+		if (swapbuffer_omission_init_gl_funcs()) {
+			GH_verbose(GH_MSG_WARNING,"adaptive swapbuffer omission not availabe without timer query, disabling it");
+			swo->min_swap_time = 0;
+			swo->swapbuffers = get_envi("GH_SWAPBUFFERS",0);;
+		}
+	}
+}
+
+static int
+swapbuffer_omission_do_swap(GH_swapbuffer_omission_t *swo)
+{
+	int do_swap;
+	if (swo->min_swap_time > 0) {
+		unsigned int i,idx;
+		uint64_t cpu = 0;
+		uint64_t gpu = 0;
+		uint64_t val;
+		timestamp_set(&swo->prev_frame_ts[swo->cur_pos][1],&swo->prev_frames[swo->cur_pos][1], GH_FRAMETIME_CPU_GPU);
+		if (++swo->cur_pos >= swo->measure_frames_tot) {
+			swo->cur_pos = 0;
+		}
+		idx = swo->cur_pos;
+
+		for (i=0; i<swo->measure_frames_avg; i++) {
+			cpu += (swo->prev_frames[idx][1].cpu - swo->prev_frames[idx][0].cpu);
+			gpu += (swo->prev_frames[idx][1].gpu - swo->prev_frames[idx][0].gpu);
+			if (++idx >= swo->measure_frames_tot) {
+				idx = 0;
+			}
+		}
+		cpu /= swo->measure_frames_avg;
+		gpu /= swo->measure_frames_avg;
+		switch (swo->measure_mode) {
+			case 1:
+				val=cpu;
+				break;
+			case 2:
+				val=gpu;
+				break;
+			default:
+				val = (cpu>gpu)?cpu:gpu;
+		}
+		if (val < 1000) {
+			val = 1000;
+		}
+		int interval  = (int)(swo->min_swap_time/val);
+		if (interval < swo->limits[0]) {
+			interval = swo->limits[0];
+		}
+		if (interval > swo->limits[1]) {
+			interval = swo->limits[1];
+		}
+		swo->prev_intervals[swo->cur_pos]=interval;
+		idx = swo->cur_pos + swo->measure_frames_tot - swo->measure_frames_avg + 1;
+		for (i=0; i<(swo->measure_frames_avg-1); i++) {
+			if (idx >= swo->measure_frames_tot) {
+				idx -= swo->measure_frames_tot;
+			}
+			interval += swo->prev_intervals[idx++];
+		}
+		swo->swapbuffers = interval / swo->measure_frames_avg;
+
+		/*printf("XXX %d %d cpu: %lu, gpu: %lu\n", swo->swapbuffers, interval, cpu, gpu);*/
+	}
+	do_swap = (++swo->swapbuffer_cnt >= swo->swapbuffers);
+	return do_swap;
+}
+
+static void
+swapbuffer_omission_swap_skipped(GH_swapbuffer_omission_t *swo)
+{
+	switch (swo->flush_mode) {
+		case 1:
+			GH_glFlush();
+			break;
+		case 2:
+			GH_glFinish();
+			break;
+		default:
+			(void)0; /* nop */
+	}
+}
+
+static void
+swapbuffer_omission_swap_finished(GH_swapbuffer_omission_t *swo, int did_swap)
+{
+	if (did_swap) {
+		swo->swapbuffer_cnt = 0;
+	}
+	if (swo->min_swap_time > 0) {
+		timestamp_set(&swo->prev_frame_ts[swo->cur_pos][0],&swo->prev_frames[swo->cur_pos][0], GH_FRAMETIME_CPU_GPU);
+	}
+}
+
+static void
+swapbuffer_omission_destroy(GH_swapbuffer_omission_t *swo)
+{
+	int i;
+	for (i=0; i<GH_SWAP_OMISSION_FRAMES_MAX; i++) {
+		timestamp_cleanup(&swo->prev_frame_ts[i][0]);
+		timestamp_cleanup(&swo->prev_frame_ts[i][1]);
+	}
+}
+
+/***************************************************************************
  * GL context tracking                                                     *
  ***************************************************************************/
 
@@ -866,6 +1265,7 @@ typedef struct gl_context_ceation_opts_s {
 	int force_flags_off;
 	int force_profile_on;
 	int force_profile_off;
+	int force_no_error;
 } gl_context_creation_opts_t;
 
 /* flag bits */
@@ -877,13 +1277,12 @@ typedef struct gl_context_s {
 	GLXDrawable draw;
 	GLXDrawable read;
 	unsigned int flags;
-	int swapbuffers;
-	int swapbuffer_cnt;
 	int inject_swapinterval;
 	unsigned int num;
 	struct gl_context_s *next;
 	GH_frametimes frametimes;
 	GH_latency latency;
+	GH_swapbuffer_omission_t swapbuffer_omission;
 	useconds_t swap_sleep_usecs;
 	GLDEBUGPROC original_debug_callback;
 	GLDEBUGPROCAMD original_debug_callback_AMD;
@@ -906,7 +1305,8 @@ static gl_context_creation_opts_t ctx_creation_opts = {
 	.force_flags_on = 0,
 	.force_flags_off = 0,
 	.force_profile_on = 0,
-	.force_profile_off = 0
+	.force_profile_off = 0,
+	.force_no_error = -1,
 };
 static gl_context_t * volatile ctx_list=NULL;
 static volatile int ctx_counter=0;
@@ -940,8 +1340,6 @@ create_ctx(GLXContext ctx, unsigned int num)
 		glc->ctx=ctx;
 		glc->draw=None;
 		glc->read=None;
-		glc->swapbuffers=0;
-		glc->swapbuffer_cnt=0;
 		glc->inject_swapinterval=GH_SWAP_DONT_SET;
 		glc->flags=GH_GL_NEVER_CURRENT;
 		glc->num=num;
@@ -953,6 +1351,7 @@ create_ctx(GLXContext ctx, unsigned int num)
 		glc->swap_sleep_usecs=0;
 		frametimes_init(&glc->frametimes, GH_FRAMETIME_NONE, 0, 0, 0, num);
 		latency_init(&glc->latency, GH_LATENCY_NOP, 0, 1000000, 0, 0);
+		swapbuffer_omission_init(&glc->swapbuffer_omission);
 	}
 	return glc;
 }
@@ -963,6 +1362,7 @@ destroy_ctx(gl_context_t *glc)
 	if (glc) {
 		frametimes_destroy(&glc->frametimes);
 		latency_destroy(&glc->latency);
+		swapbuffer_omission_destroy(&glc->swapbuffer_omission);
 		free(glc);
 	}
 }
@@ -1006,7 +1406,6 @@ remove_ctx(GLXContext ctx)
 static void
 read_config(gl_context_t *glc)
 {
-	glc->swapbuffers=get_envi("GH_SWAPBUFFERS",0);
 	glc->inject_swapinterval=get_envi("GH_INJECT_SWAPINTERVAL", GH_SWAP_DONT_SET);
 	if (get_envi("GH_GL_DEBUG_OUTPUT",0)) {
 		glc->flags |= GH_GL_INTERCEPT_DEBUG;
@@ -1096,6 +1495,7 @@ make_current(GLXContext ctx, Display *dpy, GLXDrawable draw, GLXDrawable read)
 				frametimes_init(&glc->frametimes, ft_mode, ft_delay, GH_FRAMETIME_COUNT, ft_frames, glc->num);
 				frametimes_init_base(&glc->frametimes);
 				latency_init(&glc->latency, latency, latency_manual_wait, latency_gl_wait_timeout, latency_gl_wait_interval, latency_self_wait_interval);
+				swapbuffer_omission_init_gl(&glc->swapbuffer_omission);
 				if (glc->inject_swapinterval != GH_SWAP_DONT_SET) {
 					GH_GET_PTR_GL(glXSwapIntervalEXT);
 					if (GH_glXSwapIntervalEXT) {
@@ -1328,6 +1728,12 @@ GH_debug_callback_AMD(GLuint id, GLenum category, GLenum severity,
 
 static void context_creation_opts_init(gl_context_creation_opts_t *opts)
 {
+	opts->force_profile_on = 0;
+	opts->force_profile_off = 0;
+	opts->force_flags_on = 0;
+	opts->force_flags_off = 0;
+	opts->force_no_error = -1;
+
 	if (get_envi("GH_FORCE_GL_CONTEXT_PROFILE_CORE", 0)) {
 		opts->force_profile_on = GLX_CONTEXT_CORE_PROFILE_BIT_ARB;
 		opts->force_profile_off = GLX_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB;
@@ -1341,16 +1747,26 @@ static void context_creation_opts_init(gl_context_creation_opts_t *opts)
 		opts->flags |= GH_GLCTX_COMPAT_IF_LEGACY;
 	}
 	if (get_envi("GH_FORCE_GL_CONTEXT_FLAGS_NO_FORWARD_COMPAT", 0)) {
-		opts->force_flags_off = GLX_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB;
+		opts->force_flags_on &= ~GLX_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB;
+		opts->force_flags_off |= GLX_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB;
 	}
 	if (get_envi("GH_FORCE_GL_CONTEXT_FLAGS_NO_DEBUG", 0)) {
-		opts->force_flags_off = GLX_CONTEXT_DEBUG_BIT_ARB;
+		opts->force_flags_on &= ~GLX_CONTEXT_DEBUG_BIT_ARB;
+		opts->force_flags_off |= GLX_CONTEXT_DEBUG_BIT_ARB;
 	}
 	if (get_envi("GH_FORCE_GL_CONTEXT_FLAGS_FORWARD_COMPAT", 0)) {
-		opts->force_flags_on = GLX_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB;
+		opts->force_flags_on |= GLX_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB;
+		opts->force_flags_off &= ~GLX_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB;
 	}
 	if (get_envi("GH_FORCE_GL_CONTEXT_FLAGS_DEBUG", 0)) {
-		opts->force_flags_on = GLX_CONTEXT_DEBUG_BIT_ARB;
+		opts->force_flags_on |= GLX_CONTEXT_DEBUG_BIT_ARB;
+		opts->force_flags_off &= ~GLX_CONTEXT_DEBUG_BIT_ARB;
+	}
+	if (get_envi("GH_FORCE_GL_CONTEXT_FLAGS_NO_ERROR", 0)) {
+		opts->force_no_error = GL_TRUE;
+	}
+	if (get_envi("GH_FORCE_GL_CONTEXT_FLAGS_ERROR", 0)) {
+		opts->force_no_error = GL_FALSE;
 	}
 
 	opts->force_version[0] = get_envi("GH_FORCE_GL_VERSION_MAJOR", opts->force_version[0]);
@@ -1367,6 +1783,14 @@ static void context_creation_opts_init(gl_context_creation_opts_t *opts)
 
 	opts->force_profile_on = get_envi("GH_FORCE_GL_CONTEXT_PROFILE_MASK_ON", opts->force_profile_on);
 	opts->force_profile_off = get_envi("GH_FORCE_GL_CONTEXT_PROFILE_MASK_OFF", opts->force_profile_off);
+
+	GH_verbose(GH_MSG_DEBUG, "got GL override options: force version %d.%d, min %d.%d, max %d.%d, flags +0x%x -0x%x, profile flags: +0x%x -0x%x, no error: %d\n",
+		opts->force_version[0],opts->force_version[1],
+		opts->force_version_min[0], opts->force_version_min[1],
+		opts->force_version_max[0], opts->force_version_max[1],
+		(unsigned)opts->force_flags_on, (unsigned)opts->force_flags_off,
+		(unsigned)opts->force_profile_on, (unsigned)opts->force_profile_off,
+		opts->force_no_error);
 }
 
 static int need_creation_override(const gl_context_creation_opts_t *opts)
@@ -1386,17 +1810,21 @@ static int need_creation_override(const gl_context_creation_opts_t *opts)
 	if (opts->force_profile_on || opts->force_profile_off) {
 		return 3;
 	}
+	if (opts->force_no_error >= 0) {
+		return 4;
+	}
 
 	return 0;
 }
 
 static int* get_override_attributes(gl_context_creation_opts_t *opts, const int *attribs)
 {
-	const int our_count=4;
+	const int our_count=5;
 	int count = 0;
 	int additional_count = 0;
 	int req_version[2] = {1,0};
 	int req_profile_mask = GLX_CONTEXT_CORE_PROFILE_BIT_ARB;
+	int req_no_error = -1;
 	int req_flags = 0;
 	int legacy = 0;
 	int *attr_override;
@@ -1421,6 +1849,9 @@ static int* get_override_attributes(gl_context_creation_opts_t *opts, const int 
 					break;
 				case GLX_CONTEXT_FLAGS_ARB:
 					req_flags = value;
+					break;
+				case GLX_CONTEXT_OPENGL_NO_ERROR_ARB:
+					req_no_error = value;
 					break;
 				default:
 					additional_count++;
@@ -1514,9 +1945,15 @@ static int* get_override_attributes(gl_context_creation_opts_t *opts, const int 
 			   (unsigned)req_profile_mask, (unsigned)new_profile);
 		req_profile_mask = new_profile;
 	}
+	if (opts->force_no_error >= 0) {
+		GH_verbose(GH_MSG_INFO, "overriding context NO_ERROR behavior from %d to %d\n",
+			   req_no_error, opts->force_no_error);
+		req_no_error = opts->force_no_error;
+	}
 
 	attr_override = malloc(sizeof(*attr_override) * ((additional_count + our_count) * 2 + 2));
 	if (!attr_override) {
+		GH_verbose(GH_MSG_ERROR, "overriding context attributes not possible: out of memory\n");
 		return NULL;
 	}
 
@@ -1530,6 +1967,10 @@ static int* get_override_attributes(gl_context_creation_opts_t *opts, const int 
 	attr_override[pos++] = req_profile_mask;
 	attr_override[pos++] = GLX_CONTEXT_FLAGS_ARB;
 	attr_override[pos++] = req_flags;
+	if (req_no_error >= 0) {
+		attr_override[pos++] = GLX_CONTEXT_OPENGL_NO_ERROR_ARB;
+		attr_override[pos++] = req_no_error;
+	}
 
 	for (i=0; i<count; i++) {
 		unsigned int name = (unsigned)attribs[2*i];
@@ -1539,6 +1980,7 @@ static int* get_override_attributes(gl_context_creation_opts_t *opts, const int 
 			case GLX_CONTEXT_MINOR_VERSION_ARB:
 			case GLX_CONTEXT_PROFILE_MASK_ARB:
 			case GLX_CONTEXT_FLAGS_ARB:
+			case GLX_CONTEXT_OPENGL_NO_ERROR_ARB:
 				(void)0;
 				break;
 			default:
@@ -1609,7 +2051,7 @@ static GLXContext override_create_context(Display *dpy, XVisualInfo *vis, const 
 	pthread_mutex_unlock(&ctx_creation_opts.mutex);
 
 	if (need_creation_override(&ctx_creation_opts)) {
-		GLXContext ctx;
+		GLXContext ctx = NULL;
 		int *attribs_override = get_override_attributes(&ctx_creation_opts, attribs);
 		if (!attribs_override) {
 			GH_verbose(GH_MSG_WARNING, "failed to generate context creation override attributes!\n");
@@ -1629,8 +2071,12 @@ static GLXContext override_create_context(Display *dpy, XVisualInfo *vis, const 
 				return NULL;	
 			}
 		}
-		GH_GET_PTR_GL(glXCreateContextAttribsARB);
-		ctx=GH_glXCreateContextAttribsARB(dpy, *fbconfig, shareList, direct, attribs_override);
+		GH_GET_GL_PROC(glXCreateContextAttribsARB);
+		if (GH_glXCreateContextAttribsARB) {
+			ctx=GH_glXCreateContextAttribsARB(dpy, *fbconfig, shareList, direct, attribs_override);
+		} else {
+			GH_verbose(GH_MSG_WARNING, "failed to get glXCreateContextAttribsARB\n");
+		}
 		if (ctx == NULL) {
 			GH_verbose(GH_MSG_WARNING, "overridden context creation failed!\n");
 		} else {
@@ -1798,7 +2244,7 @@ static int GH_swap_interval_absolute(const volatile GH_config *cfg, int interval
 			new_interval=interval;
 	}
 
-	GH_verbose(GH_MSG_INFO,"swap interval %d -> %d\n", interval, new_interval);
+	GH_verbose(GH_MSG_DEBUG,"swap interval, absolute value %d -> %d\n", interval, new_interval);
 	return new_interval;
 }
 
@@ -1875,9 +2321,8 @@ dlsym(void *handle, const char *name)
 	void *ptr;
 	/* special case: we cannot use GH_GET_PTR as it relies on
 	 * GH_dlsym() which we have to query using GH_dlsym_internal */
-	pthread_mutex_lock(&GH_fptr_mutex); \
-	if(GH_dlsym == NULL)
-		GH_dlsym = GH_dlsym_internal_next("dlsym");
+	pthread_mutex_lock(&GH_fptr_mutex);
+	GH_dlsym_internal_dlsym();
 	pthread_mutex_unlock(&GH_fptr_mutex);
 	interceptor=GH_get_interceptor(name, GH_dlsym_next, "dlsym");
 	ptr=(interceptor)?interceptor:GH_dlsym(handle,name);
@@ -1886,19 +2331,25 @@ dlsym(void *handle, const char *name)
 	return ptr;
 }
 
-/* also intercept GNU specific dlvsym() */
+#if (GH_DLSYM_METHOD != 2)
+/* Also intercept GNU specific dlvsym().
+ * We can do this only if we are not using dlvsym to query dlsym... */
 extern void *
 dlvsym(void *handle, const char *name, const char *version)
 {
 	void *interceptor;
 	void *ptr;
-	GH_GET_PTR(dlvsym); \
+	pthread_mutex_lock(&GH_fptr_mutex);
+	GH_dlsym_internal_dlsym();
+	pthread_mutex_unlock(&GH_fptr_mutex);
+	GH_GET_PTR(dlvsym);
 	interceptor=GH_get_interceptor(name, GH_dlsym_next, "dlvsym");
 	ptr=(interceptor)?interceptor:GH_dlvsym(handle,name,version);
 	GH_verbose(GH_MSG_DEBUG_INTERCEPTION,"dlvsym(%p, %s, %s) = %p%s\n",handle,name,version,ptr,
 		interceptor?" [intercepted]":"");
 	return ptr;
 }
+#endif
 
 /***************************************************************************
  * INTERCEPTED FUNCTIONS: glX                                              *
@@ -2185,16 +2636,27 @@ extern void glXSwapBuffers(Display *dpy, GLXDrawable drawable)
 
 	if (glc) {
 		frametimes_before_swap(&glc->frametimes);
-		if (glc->swapbuffers > 0) {
-			if (++glc->swapbuffer_cnt==glc->swapbuffers) {
+		if (glc->swapbuffer_omission.swapbuffers > 0) {
+			int do_swap;
+			if (glc->swapbuffer_omission.latency_mode > 0) {
 				latency_before_swap(&glc->latency);
-				GH_glXSwapBuffers(dpy, drawable);
-				latency_after_swap(&glc->latency);
-				glc->swapbuffer_cnt=0;
-			} else {
-				/* GH_glFinish(); */
-				GH_glFlush();
 			}
+			do_swap = swapbuffer_omission_do_swap(&glc->swapbuffer_omission);
+			if (do_swap) {
+				if (glc->swapbuffer_omission.latency_mode < 1) {
+					latency_before_swap(&glc->latency);
+					GH_glXSwapBuffers(dpy, drawable);
+					latency_after_swap(&glc->latency);
+				} else {
+					GH_glXSwapBuffers(dpy, drawable);
+				}
+			} else {
+				swapbuffer_omission_swap_skipped(&glc->swapbuffer_omission);
+			}
+			if (glc->swapbuffer_omission.latency_mode > 0) {
+				latency_after_swap(&glc->latency);
+			}
+			swapbuffer_omission_swap_finished(&glc->swapbuffer_omission, do_swap);
 		} else {
 			latency_before_swap(&glc->latency);
 			GH_glXSwapBuffers(dpy, drawable);
@@ -2340,11 +2802,36 @@ static void* GH_get_interceptor(const char *name, GH_resolve_func query,
 	}
 
 #ifdef GH_SWAPBUFFERS_INTERCEPT
-	static int do_swapbuffers=-1;
+	static int do_swapbuffers=0;
 #endif
+	static int do_dlsym = 0;
+#if (GH_DLSYM_METHOD != 2)
+	static int do_dlvsym = 0;
+#endif
+	static int inited = 0;
 
-	GH_INTERCEPT(dlsym);
-	GH_INTERCEPT(dlvsym);
+	if (!inited) {
+#ifdef GH_SWAPBUFFERS_INTERCEPT
+		do_swapbuffers =get_envi("GH_SWAPBUFFERS", 0) ||
+				get_envi("GH_FRAMETIME", 0) ||
+				get_envi("GH_SWAP_SLEEP_USECS", 0) ||
+				(get_envi("GH_LATENCY", GH_LATENCY_NOP) != GH_LATENCY_NOP);
+#endif
+		do_dlsym = get_envi("GH_HOOK_DLSYM_DYNAMICALLY", 0);
+#if (GH_DLSYM_METHOD != 2)
+		do_dlvsym = get_envi("GH_HOOK_DLVSYM_DYNAMICALLY", 0);
+#endif
+		inited = 1;
+	}
+
+	if (do_dlsym) {
+		GH_INTERCEPT(dlsym);
+	}
+#if (GH_DLSYM_METHOD != 2)
+	if (do_dlvsym) {
+		GH_INTERCEPT(dlvsym);
+	}
+#endif
 	GH_INTERCEPT(glXGetProcAddress);
 	GH_INTERCEPT(glXGetProcAddressARB);
 	GH_INTERCEPT(glXSwapIntervalEXT);
